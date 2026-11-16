@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import dataclasses
 import difflib
 import logging
+import os
 import pathlib
 from typing import Any, Protocol, TypeAlias
 
@@ -17,6 +18,7 @@ import openpi.models.model as _model
 import openpi.models.nativemem_config as nativemem_config
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.robomme_policy as robomme_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.optimizer as _optimizer
@@ -232,6 +234,78 @@ class LeRobotAlohaMemDataConfig(DataConfigFactory):
         )
 
 
+# ---------------------------------------------------------------------------
+# RoboMME 4task（BinFill／RouteStick／VideoRepick／VideoUnmaskSwap 各 400 集）多任务 Stage 2。
+# 除「一个模型训 4 个任务」及计划 X 表登记的偏离外，全部照 nativemem_pi05 原版。
+# 路径可用环境变量覆盖成绝对路径（runner 会先 cd 到仓库根，默认值与原版一样用相对路径或 fork 绝对路径）。
+# ---------------------------------------------------------------------------
+ROBOMME_DATA_ROOT = os.environ.get("NM_ROBOMME_DATA_ROOT", "/scratch/hongze/NativeMEM/data/robomme4task-v2")
+ROBOMME_EPISODE_MANIFEST = os.environ.get(
+    "NM_ROBOMME_EPISODE_MANIFEST",
+    "/scratch/hongze/robomme_policy_learning_MotionJEPA/v1-store/datasets/4task-v2-1600ep-604f16da/meta/episode_manifest.json",
+)
+ROBOMME_MEMMAP = os.environ.get("NM_ROBOMME_MEMMAP", "")  # 空 = <data_root>/mem_tokens.f32.bin
+NATIVEMEM_STAGE1_PARAMS = os.environ.get(
+    "NM_STAGE1_PARAMS", "checkpoints/mem_tokenizer_pretrain/pretrain/49999/params"
+)
+ROBOMME_MEMORY_MAX_LEN = 640  # 计划 X7：多任务只能取一个值；训练最坏 578 行、评估最坏约 520 行
+
+
+@dataclasses.dataclass(frozen=True)
+class RoboMMEDataConfig(DataConfig):
+    """DataConfig 外加 RoboMME 每集 H5 容器的位置；data_loader_mem 按 dataset_kind 分支（计划 X8）。"""
+
+    dataset_kind: str = "robomme"
+    episodes_dir: str | None = None
+    manifest_path: str | None = None
+    memmap_path: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class RoboMMEMemDataConfig(DataConfigFactory):
+    """RoboMME 两路相机、8 维单臂；变换链照 LeRobotAlohaMemDataConfig 原版顺序。"""
+
+    repo_id: str = "robomme4task"
+    data_root: str = ROBOMME_DATA_ROOT
+    manifest_path: str = ROBOMME_EPISODE_MANIFEST
+    memmap_path: str = ROBOMME_MEMMAP
+    use_delta_joint_actions: bool = True
+    default_prompt: str | None = None
+    memory_tokenizer_max_len: int = ROBOMME_MEMORY_MAX_LEN
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[robomme_policy.RoboMMEMemInputs()],
+            outputs=[robomme_policy.RoboMMEOutputs()],
+        )
+        if self.use_delta_joint_actions:
+            delta_action_mask = robomme_policy.DELTA_ACTION_MASK  # make_bool_mask(7, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+        model_transforms = ModelTransformFactory(
+            default_prompt=self.default_prompt,
+            memory_tokenizer_max_len=self.memory_tokenizer_max_len,
+        )(model_config)
+        base = self.create_base_config(assets_dirs, model_config)
+        data_root = pathlib.Path(self.data_root)
+        fields = {f.name: getattr(base, f.name) for f in dataclasses.fields(DataConfig)}
+        fields.update(
+            repack_transforms=_transforms.Group(),  # 数据集输出键即推理输入键，不需要 repack
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            prompt_from_task=False,  # 数据集直接给出 prompt=task_goal
+        )
+        return RoboMMEDataConfig(
+            **fields,
+            episodes_dir=str(data_root / "episodes"),
+            manifest_path=str(self.manifest_path),
+            memmap_path=str(self.memmap_path or data_root / "mem_tokens.f32.bin"),
+        )
+
+
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
     name: tyro.conf.Suppress[str]
@@ -303,6 +377,28 @@ _CONFIGS = [
             decay_steps=20_000,
             decay_lr=1e-6,
         ),
+    ),
+    TrainConfig(
+        name="nativemem_pi05_robomme4task",
+        # 模型同 _BASE_MODEL（pi05、memory_insert_type="self"、So400m/14、action_horizon 50），只改 max_len（X7）。
+        model=dataclasses.replace(_BASE_MODEL, memory_tokenizer_max_len=ROBOMME_MEMORY_MAX_LEN),
+        data=RoboMMEMemDataConfig(
+            assets=AssetsConfig(
+                assets_dir="./assets",
+                asset_id="robomme4task",
+            ),
+        ),
+        weight_loader=weight_loaders.NativeMEMWeightLoader(NATIVEMEM_STAGE1_PARAMS),
+        num_train_steps=20_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=2e-5,
+            decay_steps=20_000,
+            decay_lr=1e-6,
+        ),
+        # 计划 X2：4 任务 × 20k × 32 = 20k × 128；lr 等不缩放（用户已定）。卡数属基础设施。
+        batch_size=128,
+        fsdp_devices=8,
     ),
 ]
 

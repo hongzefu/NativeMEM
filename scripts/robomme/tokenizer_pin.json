@@ -1,0 +1,117 @@
+{
+  "files": [
+    {
+      "git_blob_id": "bd622fdd3c3778ab8913c763177ed7386c1e7516",
+      "path": "_METADATA",
+      "size": 34739
+    },
+    {
+      "git_blob_id": "415cae364916087d311918ff2ded12f1eadffdb5",
+      "path": "_sharding",
+      "size": 22601
+    },
+    {
+      "git_blob_id": "47facefa99bd6a154dc94062dcd1026d42d3093e",
+      "path": "array_metadatas/process_0",
+      "size": 13575
+    },
+    {
+      "git_blob_id": "c9cd8dc41e21372f18283a2affff768e20d51cc8",
+      "path": "d/196417c2933ce5968537df139c7e2b66",
+      "size": 23147
+    },
+    {
+      "git_blob_id": "207a00e32bc25192ef6b6a352f027f17f111d2c3",
+      "path": "manifest.ocdbt",
+      "size": 120
+    },
+    {
+      "lfs_sha256": "ee7e2776d6f55c21506a5a8f7ec90e62e7db1b10aef9d5236e13bece382ba0ad",
+      "path": "ocdbt.process_0/d/079653d24d2d4acfcfa6fc328d144376",
+      "size": 1575735976
+    },
+    {
+      "git_blob_id": "6d0af9bf472254567da7f17798b72dd241f7a120",
+      "path": "ocdbt.process_0/d/11750445c9d517b056c0692c5b0274df",
+      "size": 1361
+    },
+    {
+      "git_blob_id": "2a0b58f2c74a2f8b9539cde943dce7b6fad34243",
+      "path": "ocdbt.process_0/d/176712a2d48ca90b47a25d8bd1a250a8",
+      "size": 220
+    },
+    {
+      "lfs_sha256": "d6ed7164e9ed8610d5c4b5b0ea39f0c51cfe984d307f80f02153a6e4ef137cc0",
+      "path": "ocdbt.process_0/d/17d58ab1f472d5b42356e82ff7c64022",
+      "size": 1418263621
+    },
+    {
+      "lfs_sha256": "207a0e43eaaba21d1171aaa0ac04105ae6edcd4b4908f38ddf21c5b34018c9c8",
+      "path": "ocdbt.process_0/d/255f4d2c030b3c029cab8a731164f1de",
+      "size": 417418677
+    },
+    {
+      "lfs_sha256": "5d488bd02b84bf37c0ace8f1b3792cdbb0958a5569b23b5d4dc1a2287161fad5",
+      "path": "ocdbt.process_0/d/29f14c5f8f428216c15d5c4f8adfda78",
+      "size": 857931147
+    },
+    {
+      "lfs_sha256": "114987d863f7dff7056a5cc360a0246b58283c1d93e7fa7707e53220c09c51c0",
+      "path": "ocdbt.process_0/d/2c9703eb1db16c3bd285c8ffacf9ad9b",
+      "size": 472962981
+    },
+    {
+      "lfs_sha256": "6dac8fd00ad833f873b18eeda254605c421edb0a268e1a5752d5d145565fac18",
+      "path": "ocdbt.process_0/d/4e9ac537ba6b19269a12960edd5927bf",
+      "size": 207513294
+    },
+    {
+      "lfs_sha256": "dad1ba663c89b85e6f306031d0bc0d66e5c2008bbb65cc0afd517f87234a968c",
+      "path": "ocdbt.process_0/d/91811f1c114e41b6e933c66155dcbd7b",
+      "size": 869860639
+    },
+    {
+      "git_blob_id": "9077ae06dde066b2eddd53c8afe974c481dcd24d",
+      "path": "ocdbt.process_0/d/9a95839058994ce490a5aafec06c27a9",
+      "size": 3566
+    },
+    {
+      "lfs_sha256": "2fa55e2f31fe30999128bfc87f1ac6c5bc6719473077d769bd85683703643917",
+      "path": "ocdbt.process_0/d/ab8e7069cb3c7d92f202f8dcf9f796c0",
+      "size": 236492020
+    },
+    {
+      "lfs_sha256": "4b7cd5af5a7c95111e9b9ac55fe7b3529df668b730548b069fd92bccb1403d02",
+      "path": "ocdbt.process_0/d/ac71cb4c0049a0f3692baebf96e6810f",
+      "size": 124269012
+    },
+    {
+      "lfs_sha256": "e7a938865a9564fbf10a4dce738be594501f402548f00ff640e2c83be3d0ea2f",
+      "path": "ocdbt.process_0/d/c4defe70c06dea3923524085bfef1a7e",
+      "size": 1752603
+    },
+    {
+      "lfs_sha256": "07b777e7ea63cc8a26d2d06b856f2a75aee1d7ad755bf27c76e303042d2b3d3d",
+      "path": "ocdbt.process_0/d/c788dd6d3efada50eaf10634a114f7fd",
+      "size": 142146572
+    },
+    {
+      "lfs_sha256": "3a8e5357f5f32b79ef3055327ddcc2c2f7b81e4f7e5212c80bf77d2c1ff28ea2",
+      "path": "ocdbt.process_0/d/e22ed0d1eac474213fe66e2bcc3276ad",
+      "size": 472753013
+    },
+    {
+      "git_blob_id": "14cdb60fc369da080296be049cffccb48dc16156",
+      "path": "ocdbt.process_0/manifest.ocdbt",
+      "size": 767
+    }
+  ],
+  "local_params_dir_default": "checkpoints/mem_tokenizer_pretrain/pretrain/49999/params",
+  "manifest_sha256": "fbcc1406510985a1b55485b73ddd6ad5d1b90f535b0530025603534560733bdc",
+  "num_files": 21,
+  "params_prefix": "checkpoints/mem_tokenizer_pretrain/pretrain/49999/params/",
+  "repo_id": "Ziyeeee/NativeMEM",
+  "repo_type": "model",
+  "revision": "a0317e14c232aa64da0c44a8d1adc0076161f60e",
+  "total_bytes": 6797199651
+}
