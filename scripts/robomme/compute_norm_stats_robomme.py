@@ -7,7 +7,8 @@
   夹爪（第 8 维）保持绝对；变换前先 copy()，不原地改动 H5 读出的数组；
 - normalize.RunningStats 逐帧 update（state 一行、动作窗 50 行，与原版顺序和粒度相同），
   按 global_episode_idx 升序累计；
-- 存 <out_dir>/norm_stats.json（mean/std/q01/q99，8 维），训练用分位数归一化。
+- 存 <out_dir>/norm_stats.json（mean/std/q01/q99，8 维），训练用分位数归一化；另写 norm_stats.provenance.json
+  （计数、sha256、数据来源），两者都 git add -f 入库，run_train.sh 起跑前核对。
 读取 H5 用进程池并行，统计累计在主进程按集序串行（RunningStats 直方图与更新顺序有关，保持原版逐帧粒度）。
 
 末行：NORM_STATS=PASS states=605611 action_vectors=30280550 sha256=<norm_stats.json sha256>
@@ -16,7 +17,9 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
+import json
 import multiprocessing
 import os
 import pathlib
@@ -129,6 +132,20 @@ def main() -> None:
     )
     path = pathlib.Path(args.out_dir) / "norm_stats.json"
     sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    # 出处文件与 norm_stats.json 一起 git add -f 入库；run_train.sh 起跑前据此核对计数与 sha256（G4）。
+    prov = {
+        "norm_stats_sha256": sha,
+        "states": n_states,
+        "action_vectors": n_actions,
+        "action_horizon": args.action_horizon,
+        "delta_mask": "make_bool_mask(7,-1)",
+        "samples": "exec frames only",
+        "data_root": str(args.data_root),
+        "manifest": str(args.manifest),
+        "manifest_sha256": hashlib.sha256(pathlib.Path(args.manifest).read_bytes()).hexdigest(),
+        "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    (pathlib.Path(args.out_dir) / "norm_stats.provenance.json").write_text(json.dumps(prov, indent=2) + "\n")
     print(f"NORM_STATS=PASS states={n_states} action_vectors={n_actions} sha256={sha} out={path}")
 
 

@@ -504,3 +504,22 @@ def test_extract_and_check_memtokens(tmp_path):
     ok, line = cm.check(s["root"], 3, pin, lambda: _fake_encode, write_done=False)
     print(line)
     assert not ok and "zero_rows=1" in line
+
+
+def test_mem_data_loader_end_to_end(synth, tmp_path):
+    """训练入口 create_mem_torch_data_loader 走 RoboMME 分支，产出 (Observation, Actions) 批次。"""
+    from openpi.training.data_loader_mem import create_mem_torch_data_loader
+
+    cfg, data_cfg = _data_config(synth, tmp_path)
+    loader = create_mem_torch_data_loader(
+        data_cfg, cfg.model, cfg.model.action_horizon, 4, shuffle=True, num_batches=2, num_workers=0, seed=42
+    )
+    batches = list(loader)
+    assert len(batches) == 2
+    obs, act = batches[0]
+    assert act.shape == (4, 50, 32)
+    assert obs.state.shape == (4, 32)
+    assert obs.memory.shape == (4, 640, 1152) and obs.memory_mask.shape == (4, 640)
+    assert obs.images["base_0_rgb"].shape == (4, 224, 224, 3)
+    assert obs.tokenized_prompt.shape == (4, cfg.model.max_token_len)
+    assert not bool(np.asarray(obs.image_masks["right_wrist_0_rgb"]).any())
