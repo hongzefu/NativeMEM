@@ -26,7 +26,7 @@ rm -f "$FJ"
 FAULTS=$("$PY" -I -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
-print(f"{d[\"caught\"]}/{d[\"total\"]}")
+print(str(d["caught"]) + "/" + str(d["total"]))
 ' "$FJ")
 [ "$FAULTS" = "4/4" ] || { echo "DATA_V2=FAIL 故障注入只拦下 $FAULTS"; exit 1; }
 grep -E "REAL_EPISODE|passed|skipped" "$LOGD/unittest.log" || true
