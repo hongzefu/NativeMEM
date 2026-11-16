@@ -95,6 +95,18 @@ def create_mem_torch_dataset(
         raise ValueError("Repo ID is not set. Cannot create dataset.")
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
+    if getattr(data_config, "dataset_kind", None) == "robomme":
+        # RoboMME 4task：每集 H5 + 记忆 token memmap 容器（计划 X8），取样语义照本文件 MemLeRobotDataset。
+        from openpi.robomme.dataset import RoboMMEMemDataset
+
+        return RoboMMEMemDataset(
+            data_config.episodes_dir,
+            data_config.manifest_path,
+            data_config.memmap_path,
+            action_horizon=action_horizon,
+            intervals=data_config.mem_intervals,
+            seed=seed,
+        )
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
     dataset = MemLeRobotDataset(
