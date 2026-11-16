@@ -1,8 +1,8 @@
 """按 tokenizer_pin.json 核对本地 Stage 1 权重目录（计划 G2）。
 
 两档：
-  cheap：文件集合相同、逐文件字节数相同、小文件 git blob id 相同、LFS 大文件首尾各 1 MiB 的 blake2b
-         只记录（挡不住「保持长度改中间字节」，不作通过依据，只做快速前置）。
+  cheap：只比文件集合、逐文件字节数、小文件（非 LFS）git blob id；LFS 大文件不读内容
+         （挡不住「保持长度改中间字节」，只做快速前置）。
   full ：在 cheap 基础上逐文件全量 sha256 与 pin 里 HF 服务端给出的 LFS sha256 比对（小文件比 git blob id）。
 末行：TOKENIZER_PIN=PASS|FAIL level=<cheap|full> files=<n> sha=<pin manifest sha256 前 8 位> revision=<40 位>
 """

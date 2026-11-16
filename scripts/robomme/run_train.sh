@@ -2,7 +2,8 @@
 # NativeMEM RoboMME 4task Stage 2 训练 runner（1116 计划 C1、E 表 G2–G6a／G8／G8b／G12、J#9／#19）。
 #
 # 用法（由主会话放进 detached tmux，外层 tee 日志并写 EXIT_CODE=）：
-#   bash scripts/robomme/run_train.sh --check-only     # CPU：G2 G3 G4 G5 G6a，全部 JAX_PLATFORMS=cpu
+#   bash scripts/robomme/run_train.sh --check-only     # CPU：G2 G3 G4 G5 G6a ＋ CLI_PARSE，全部 JAX_PLATFORMS=cpu
+#   bash scripts/robomme/run_train.sh --dataset-smoke  # CPU：G6b 真库取样（G7 之后、第 5 步冒烟之前），只跑这一项
 #   bash scripts/robomme/run_train.sh --smoke          # 8 卡：nm-smoke20，20 步，临时 save_interval 10／keep_period 20（G8）
 #   bash scripts/robomme/run_train.sh --resume-smoke   # 8 卡：从 nm-smoke20 第 19 步 --resume 续训 2 步（G8b）
 #   bash scripts/robomme/run_train.sh --formal         # 8 卡：nativemem-4task1600-b128-20k，正式超参（G12）
@@ -18,8 +19,8 @@
 set -euo pipefail
 
 MODE="${1:-}"
-case "$MODE" in --check-only|--smoke|--resume-smoke|--formal) ;; *)
-  echo "用法: $0 --check-only|--smoke|--resume-smoke|--formal"; exit 2 ;;
+case "$MODE" in --check-only|--dataset-smoke|--smoke|--resume-smoke|--formal) ;; *)
+  echo "用法: $0 --check-only|--dataset-smoke|--smoke|--resume-smoke|--formal"; exit 2 ;;
 esac
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -57,12 +58,27 @@ fail() { echo "$1"; echo "RUN_TRAIN=FAIL mode=$MODE reason=$2"; exit 1; }
 echo "== run_train $MODE 开始 $(now) repo=$REPO head=$(git rev-parse HEAD)"
 [ -x "$PY" ] || fail "错误: 解释器不存在 $PY" no_python
 
-if [ "$MODE" = "--check-only" ]; then
+if [ "$MODE" = "--check-only" ] || [ "$MODE" = "--dataset-smoke" ]; then
   export JAX_PLATFORMS=cpu CUDA_VISIBLE_DEVICES=
 fi
+
+# 三种训练模式实际传给 train_nativemem.py 的覆盖参数（训练与 --check-only 的 CLI_PARSE 共用同一份数组）
+COMMON_ARGS=(--no-wandb-enabled)
+SMOKE_ARGS=(--num_train_steps=20 --save_interval=10 --keep_period=20 --log_interval=1)
+RESUME_ARGS=(--resume --num_train_steps=22 --save_interval=10 --keep_period=1 --log_interval=1)
+FORMAL_ARGS=()
 "$PY" -c "import openpi, jax; print('openpi.__file__=' + openpi.__file__); print('jax.devices()=' + str(jax.devices()))"
 "$PY" -c "import openpi, pathlib, sys; sys.exit(0 if pathlib.Path(openpi.__file__).resolve().is_relative_to(pathlib.Path('$REPO').resolve()) else 1)" \
   || fail "错误: openpi 未指向本仓库 $REPO/src" openpi_path
+
+# ---------------- G6b 真库取样（单独模式） ----------------
+if [ "$MODE" = "--dataset-smoke" ]; then
+  line=$("$PY" scripts/robomme/check_dataset_smoke.py --data-root "$NM_ROBOMME_DATA_ROOT" \
+           --manifest "$NM_ROBOMME_EPISODE_MANIFEST" | tail -n 1 || true)
+  echo "$line"
+  case "$line" in "DATASET_SMOKE=PASS n=$EXPECT_STATES "*) echo "RUN_TRAIN=PASS mode=dataset-smoke $(now)"; exit 0 ;; esac
+  fail "错误: G6b 未通过" dataset_smoke
+fi
 
 # ---------------- G2 TOKENIZER_PIN ----------------
 line=$(JAX_PLATFORMS=cpu "$PY" scripts/robomme/verify_tokenizer_pin.py --params-dir "$NM_STAGE1_PARAMS" --level full | tail -n 1 || true)
@@ -147,6 +163,28 @@ grep '^WEIGHTS_LOAD=PASS' "$TEST_LOG" | tail -n 1
 echo "G6A_SYNTHETIC=PASS tests=$(grep -Eo '[0-9]+ passed' "$TEST_LOG" | tail -n 1)"
 
 if [ "$MODE" = "--check-only" ]; then
+  # CLI_PARSE：用 tyro 按三种模式实际参数解析配置后直接退出，不启动训练（CPU）
+  line=$(JAX_PLATFORMS=cpu "$PY" - "$CONFIG" "${COMMON_ARGS[*]}" "${SMOKE_ARGS[*]}" "${RESUME_ARGS[*]}" "${FORMAL_ARGS[*]}" <<'PYEOF' | tail -n 1 || true
+import sys
+from openpi.training import config_nativemem as c
+config, common, smoke, resume, formal = sys.argv[1], *(a.split() for a in sys.argv[2:6])
+modes = {"smoke": ("nm-smoke20", smoke), "resume-smoke": ("nm-smoke20", resume), "formal": ("nativemem-4task1600-b128-20k", formal)}
+ok = 0
+for mode, (run, extra) in modes.items():
+    sys.argv = ["train_nativemem.py", config, f"--exp_name={run}", *common, *extra]
+    cfg = c.cli()
+    want = {"smoke": dict(num_train_steps=20, save_interval=10, keep_period=20, log_interval=1, resume=False),
+            "resume-smoke": dict(num_train_steps=22, save_interval=10, keep_period=1, log_interval=1, resume=True),
+            "formal": dict(num_train_steps=20000, save_interval=10000, keep_period=20000, log_interval=100, resume=False)}[mode]
+    got = {k: getattr(cfg, k) for k in want}
+    good = got == want and cfg.exp_name == run and cfg.wandb_enabled is False and cfg.batch_size == 128
+    print(f"[cli] {mode}: {'ok' if good else 'MISMATCH'} {got}")
+    ok += good
+print(f"CLI_PARSE={'PASS' if ok == 3 else 'FAIL'} modes={ok}")
+PYEOF
+)
+  echo "$line"
+  [ "$line" = "CLI_PARSE=PASS modes=3" ] || fail "错误: CLI_PARSE 未通过" cli_parse
   echo "RUN_TRAIN=PASS mode=check-only $(now)"
   exit 0
 fi
@@ -163,9 +201,9 @@ unset JAX_PLATFORMS CUDA_VISIBLE_DEVICES
 train() {  # $1 = run 名，其余为附加覆盖参数；训练日志单独 tee，返回训练进程退出码
   local run="$1"; shift
   local log="$LOG_ROOT/$run.train.log"
-  echo "TRAIN_CMD: $PY scripts/train_nativemem.py $CONFIG --exp_name=$run --no-wandb-enabled $*"
+  echo "TRAIN_CMD: $PY scripts/train_nativemem.py $CONFIG --exp_name=$run ${COMMON_ARGS[*]} $*"
   set +e
-  "$PY" scripts/train_nativemem.py "$CONFIG" --exp_name="$run" --no-wandb-enabled "$@" 2>&1 | tee -a "$log"
+  "$PY" scripts/train_nativemem.py "$CONFIG" --exp_name="$run" "${COMMON_ARGS[@]}" "$@" 2>&1 | tee -a "$log"
   local rc=${PIPESTATUS[0]}
   set -e
   echo "TRAIN_EXIT_CODE=$rc run=$run log=$log"
@@ -187,7 +225,7 @@ case "$MODE" in
   [ ! -e "$CKPT_ROOT/$RUN" ] || fail "错误: $CKPT_ROOT/$RUN 已存在（拒绝覆盖；由主会话按清单清理后重跑）" run_exists
   [ ! -e "$LOG_ROOT/$RUN.train.log" ] || fail "错误: $LOG_ROOT/$RUN.train.log 已存在（拒绝覆盖本轮日志）" log_exists
   # 冒烟临时把存档周期调进 20 步内：第 10 步存、第 19 步存后第 10 步被轮转删除（keep_period 20、max_to_keep 1），正式超参不变。
-  set +e; train "$RUN" --num_train_steps=20 --save_interval=10 --keep_period=20 --log_interval=1; rc=$?; set -e
+  set +e; train "$RUN" "${SMOKE_ARGS[@]}"; rc=$?; set -e
   steps=$(ckpt_steps "$CKPT_ROOT/$RUN")
   saves=$(grep -c 'Waiting for checkpoint manager to finish' "$LOG_ROOT/$RUN.train.log" || true)
   rotate=FAIL; [ "$steps" = "19 " ] && [ "$saves" = 2 ] && rotate=PASS
@@ -207,7 +245,7 @@ case "$MODE" in
   RUN=nm-smoke20
   [ -d "$CKPT_ROOT/$RUN/19" ] || fail "错误: 缺 $CKPT_ROOT/$RUN/19（先跑 --smoke）" no_smoke_ckpt
   # 续训 2 步（第 20、21 步），keep_period=1 让第 19 步存档保留下来供核对 Adam／EMA 恢复；数据流不恢复属原版行为。
-  set +e; train "$RUN" --resume --num_train_steps=22 --save_interval=10 --keep_period=1 --log_interval=1; rc=$?; set -e
+  set +e; train "$RUN" "${RESUME_ARGS[@]}"; rc=$?; set -e
   first_step=$(grep -Eo 'Step [0-9]+:' "$LOG_ROOT/$RUN.train.log" | tail -n 2 | head -n 1 | grep -Eo '[0-9]+' || true)
   rl=FAIL
   if [ "$rc" = 0 ] && [ -d "$CKPT_ROOT/$RUN/21" ]; then
@@ -225,7 +263,7 @@ case "$MODE" in
   echo "BETA_HEAD=$(git rev-parse HEAD) subject=$subj"
   [ ! -e "$CKPT_ROOT/$RUN" ] || fail "错误: $CKPT_ROOT/$RUN 已存在（拒绝覆盖）" run_exists
   [ ! -e "$LOG_ROOT/$RUN.train.log" ] || fail "错误: $LOG_ROOT/$RUN.train.log 已存在（拒绝覆盖本轮日志）" log_exists
-  set +e; train "$RUN"; rc=$?; set -e
+  set +e; train "$RUN" "${FORMAL_ARGS[@]}"; rc=$?; set -e
   steps=$(ckpt_steps "$CKPT_ROOT/$RUN")
   fin=FAIL
   if [ "$rc" = 0 ] && [ "$steps" = "19999 " ]; then

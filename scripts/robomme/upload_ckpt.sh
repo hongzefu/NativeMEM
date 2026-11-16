@@ -50,7 +50,8 @@ set -a; . "$SECRETS"; set +a
 hf() { uvx --python 3.11 --from "huggingface_hub[cli]==1.30.0" hf "$@"; }
 
 bucket_stat() {  # $1 = 字段名 size|totalFiles
-  curl -sf -H "Authorization: Bearer $HF_TOKEN" "https://huggingface.co/api/buckets/HongzeFu" \
+  # token 不进 curl 的 argv（ps 可见）：printf 是 shell 内建，header 经 fd 3 传给 curl -H @/dev/fd/3。
+  curl -sf -H @/dev/fd/3 "https://huggingface.co/api/buckets/HongzeFu" 3< <(printf 'Authorization: Bearer %s\n' "$HF_TOKEN") \
     | uv run --no-project python -c "
 import sys, json
 for b in json.load(sys.stdin):

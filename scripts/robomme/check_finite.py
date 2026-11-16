@@ -8,7 +8,7 @@
 另有续训核对：
   --resume-check <ckpt_dir> --from-step 19 --to-step 21
       to 存档的 step == to+1、Adam count 全等于 step（证明 Adam 状态从 from 存档恢复，而不是从头初始化）、
-      EMA 已恢复（‖ema_to − ema_from‖∞ ≤ ‖raw_to − ema_from‖∞ 且 ema_to ≠ raw_to）。输出 RESUME=PASS|FAIL。
+      EMA 已恢复（‖ema_to − ema_from‖∞ ≤ 0.5·‖raw_to − ema_from‖∞ 且 ema_to ≠ raw_to）。输出 RESUME=PASS|FAIL。
 末行：CHECK_FINITE finite=PASS|FAIL <各子项>=PASS|FAIL
 """
 
@@ -31,6 +31,8 @@ STEP_RE = re.compile(r"Step (\d+): (.*)$")
 # train_nativemem.py 的日志格式 "%(message)-80s (%(process)d:%(filename)s:%(lineno)s)"，尾部要剥掉。
 TAIL_RE = re.compile(r"\s+\(\d+:[^()]*:\d+\)\s*$")
 REQUIRED_KEYS = ("loss", "grad_norm", "param_norm")
+# EMA 恢复判据要有明显间隔：decay 0.99 续训 2 步时理论比值约 0.02，若 EMA 未恢复（被重置）比值接近或大于 1。
+EMA_GAP = 0.5
 
 
 def check_log_text(text: str) -> tuple[bool, str]:
@@ -177,7 +179,7 @@ def resume_check(ckpt_dir: str | pathlib.Path, from_step: int, to_step: int) -> 
         d_er = max(d_er, float(np.max(np.abs(et - rt))))
     if matched == 0:
         reasons.append("ema_unmatched")
-    elif not (d_ema <= d_raw and d_er > 0):
+    elif not (d_ema <= EMA_GAP * d_raw and d_er > 0):
         reasons.append(f"ema d_ema={d_ema:.3e} d_raw={d_raw:.3e} d_ema_raw={d_er:.3e}")
     ok = not reasons
     return ok, (
@@ -216,6 +218,29 @@ def selftest() -> tuple[bool, str]:
     a_bad[3, 2] = np.nan
     results.append(("actions_nan", check_actions(a_bad)[0], False))
     results.append(("actions_shape", check_actions(np.zeros((49, 8)))[0], False))
+    # 续训核对（RESUME）：合成第 19／21 步存档，覆盖正常恢复与各类未恢复情形。
+    rng = np.random.default_rng(0)
+    ema19 = rng.normal(size=(4, 4)).astype(np.float32)
+    raw21 = ema19 + 1.0  # raw 与 EMA 拉开距离
+    for name, ema21, count, step, want in (
+        ("resume_ok", 0.9801 * ema19 + 0.0199 * raw21, 22, 22, True),        # d_ema ≈ 0.02·d_raw
+        ("resume_ema_reset", raw21.copy(), 22, 22, False),                   # EMA 被重置成 raw：d_er = 0
+        ("resume_ema_gap", 0.3 * ema19 + 0.7 * raw21, 22, 22, False),        # 比值 0.7 落在间隔内
+        ("resume_ema_reinit", ema19 - 5.0, 22, 22, False),                   # EMA 重新初始化：远离 ema19
+        ("resume_adam_fresh", 0.9801 * ema19 + 0.0199 * raw21, 2, 22, False),  # Adam 从头初始化
+        ("resume_step_wrong", 0.9801 * ema19 + 0.0199 * raw21, 3, 3, False),
+    ):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            trees = {
+                "19/params": {"params": {"w": ema19}},
+                "21/params": {"params": {"w": ema21.astype(np.float32)}},
+                "21/train_state": {"params": {"w": raw21}, "opt_state": {"count": np.int32(count)}, "step": np.int32(step)},
+            }
+            for rel, tree in trees.items():
+                with ocp.PyTreeCheckpointer() as ck:
+                    ck.save(root / rel, tree)
+            results.append((name, resume_check(root, 19, 21)[0], want))
     wrong = [name for name, got, want in results if got != want]
     return not wrong, f"cases={len(results)} wrong={wrong}"
 
