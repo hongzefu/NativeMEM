@@ -136,6 +136,7 @@ blockquote{border-left:4px solid var(--line);margin:1em 0;padding:.4em 1em;color
 <p>逐文件、逐函数的实现细节、闸门定义与逐条处置见第二部分。</p>
 
 <h1>第二部分（技术细节，供 agent 追踪）</h1>
+<p class="small">编号说明：第二部分引用的 K（用户口径）、V（照原版项）、X（偏离项）、§4／§9 编号沿用第二至四版第一部分的口径表编号；现行第一部分已把它们合并为 §1 用户口径表与 §2「和原版的区别」表（逐行同名），V 项对应 §2 首行「相同（照搬）」，X1–X13 对应 §2 其后各行；§9 用户裁决已并入 §1。G10a <code>CLIENT_WRIST_E2E</code> 在 S2 合入后以 CPU 协议级先跑一次（属 READY 前置），第 5 步 G10 同场复核。</p>
 
 <h2>A. 前置声明与红线</h2>
 <table>
@@ -170,7 +171,7 @@ blockquote{border-left:4px solid var(--line);margin:1em 0;padding:.4em 1em;color
 <h3>C0 已有（第一轮，commitNM1.0 <code>0ecc55b</code>）</h3>
 <p><code>scripts/robomme/build_memframes.py</code>、<code>run_memframes.sh</code>（只抽前视图）、<code>uv add h5py</code>。由 C1 第 1 行扩展取代。</p>
 
-<h3>C1 S1 训练侧</h3>
+<h3>C1 S0（第 1 行）＋ S1 训练侧（其余各行）</h3>
 <table>
 <tr><th>文件</th><th>新建／修改</th><th>要点</th></tr>
 <tr><td><code>scripts/robomme/build_data_v2.py</code>＋<code>run_data_v2.sh</code></td><td>新建（由 C0 扩展）</td><td>每集写 <code>data/robomme4task-v2/episodes/ep_&lt;global:04d&gt;.h5</code>：<code>front_jpeg</code>、<code>wrist_jpeg</code>（vlen，<code>resize_with_pad_cv2</code> 224 + JPEG q95，RGB 原样）、<code>state</code> (T,8)=<code>joint_state[t]</code>⊕<code>gripper_state[t][:1]</code>、<code>action</code> (T,8)=<code>joint_action[t]</code>（X5，不移位不丢帧）、<code>is_demo</code>、attrs（task_goal 小写、member、h5_sha256、num_timesteps、exec_start_idx）。三项校验沿用 C0（sha256／帧数与 demo 长度／首执行帧原图对 V17 pkl）。流式解压、组完成即删。末行 <code>DATA_V2=PASS episodes=1600 frames=1192918 views=2</code>。</td></tr>
@@ -179,9 +180,13 @@ blockquote{border-left:4px solid var(--line);margin:1em 0;padding:.4em 1em;color
 <tr><td><code>src/openpi/robomme/dataset.py</code></td><td>新建</td><td><code>RoboMMEMemDataset</code>：样本 = 605,611 个执行帧（X3）；当前帧解码两路 JPEG、state、动作块 = action[t..t+49] 越界夹末帧（原版 LeRobot 行为）、prompt；<code>memory</code> 按 <code>MemLeRobotDataset._get_memory_indices</code> 原样取帧号（含演示帧），查 memmap 得 (T,2,1152)。worker 随机流按 <code>get_worker_info().seed</code> 播种（V7）。</td></tr>
 <tr><td><code>src/openpi/training/data_loader_mem.py</code></td><td>修改</td><td>建数据集入口按配置分支到 <code>RoboMMEMemDataset</code>（X8 容器），其余不变。</td></tr>
 <tr><td><code>src/openpi/training/config_nativemem.py</code></td><td>修改</td><td>新增 <code>nativemem_pi05_robomme4task</code>：模型同 <code>_BASE_MODEL</code>（pi05、<code>memory_insert_type="self"</code>、So400m/14、action_horizon 50），<code>memory_tokenizer_max_len=640</code>（X7）；数据变换照原版链路换成 <code>RoboMMEMemInputs</code>／<code>DeltaActions(make_bool_mask(7,-1))</code>／分位数 Normalize／ResizeImages 224／TokenizePrompt／TokenizeMemory(640)／Pad 32；weight_loader 原样 <code>NativeMEMWeightLoader(".../pretrain/49999/params")</code>；超参照原版只改 <code>batch_size=128</code>（X2）、<code>fsdp_devices=8</code>。</td></tr>
-<tr><td><code>scripts/robomme/extract_mem_tokens.py</code></td><td>新建</td><td>照 <code>_MemTokenExtractor</code> 用 Stage1 <code>encoder</code> 子树；离线输入 = 帧库 JPEG 解码（与原版转换脚本相同：先 cv2 224 + JPEG，再经 <code>image_tools.resize_with_pad</code>（224→224 恒等）/255·2−1）；<code>--init</code>／<code>--num-shards 8 --shard-index i</code>／<code>--finalize</code>，memmap <code>data/robomme4task-v2/mem_tokens.f32.bin</code> [1192918,2,1152]（约 11 GB），末行 <code>MEMTOKENS=PASS rows=1192918 views=2 dim=1152 nonfinite=0</code>。 行号规则（S1／S2／分片抽取共用契约）：<code>row = episode_manifest.episodes[e].total_sample_offset + t</code>，t 为该集帧号（含演示帧）。</td></tr>
-<tr><td><code>scripts/robomme/run_train.sh</code></td><td>新建</td><td><code>--check-only|--smoke|--formal</code>；闸门 G2–G6；训练 <code>.venv/bin/python scripts/train_nativemem.py nativemem_pi05_robomme4task --exp_name=&lt;run&gt;</code>，<code>XLA_PYTHON_CLIENT_MEM_FRACTION=0.9</code>、8 卡、缓存指向 <code>/scratch/hongze/.cache</code>、wandb 关；<code>--smoke</code> 20 步第 19 步存档读回。</td></tr>
+<tr><td><code>scripts/robomme/extract_mem_tokens.py</code></td><td>新建</td><td>照 <code>_MemTokenExtractor</code> 用 Stage1 <code>encoder</code> 子树；离线输入 = 每集 H5 的 <code>front_jpeg</code>／<code>wrist_jpeg</code> 解码（与原版转换脚本相同：先 cv2 224 + JPEG，再经 <code>image_tools.resize_with_pad</code>（224→224 恒等）/255·2−1）；<code>--init</code>／<code>--num-shards 8 --shard-index i</code>／<code>--finalize</code>，memmap <code>data/robomme4task-v2/mem_tokens.f32.bin</code> [1192918,2,1152]（约 11 GB），末行 <code>MEMTOKENS=PASS rows=1192918 views=2 dim=1152 nonfinite=0</code>。 行号规则（S1／S2／分片抽取共用契约）：<code>row = episode_manifest.episodes[e].total_sample_offset + t</code>，t 为该集帧号（含演示帧）。</td></tr>
+<tr><td><code>scripts/robomme/run_train.sh</code></td><td>新建</td><td><code>--check-only|--smoke|--resume-smoke|--formal</code>（<code>--resume-smoke</code>：从 nm-smoke20 第 19 步存档 <code>--resume</code> 续训 2 步，核对 step、Adam、EMA 恢复，输出 <code>RESUME=PASS</code>，G8b）；闸门 G2–G6；训练 <code>.venv/bin/python scripts/train_nativemem.py nativemem_pi05_robomme4task --exp_name=&lt;run&gt;</code>，<code>XLA_PYTHON_CLIENT_MEM_FRACTION=0.9</code>、8 卡、缓存指向 <code>/scratch/hongze/.cache</code>、wandb 关；<code>--smoke</code> 20 步第 19 步存档读回。</td></tr>
 <tr><td><code>scripts/robomme/test_robomme_s1.py</code></td><td>新建</td><td>CPU 单测：记忆帧号规则；动作块越界夹取；数据集键与形状；变换链对真实帧跑通；权重加载后缺失键只有模型侧无对应的 <code>encoder/*</code>（反向），打印 <code>WEIGHTS_LOAD</code>。</td></tr>
+<tr><td><code>scripts/robomme/make_tokenizer_pin.py</code>、<code>verify_tokenizer_pin.py</code>、<code>tokenizer_pin.json</code></td><td>新建（S1）</td><td>从 HF API 取 <code>Ziyeeee/NativeMEM</code> 40 位 commit sha 与 params 各文件 LFS oid 写 <code>tokenizer_pin.json</code>（进 git）；verify 分 cheap／full 两档，输出 <code>TOKENIZER_PIN=PASS files=&lt;n&gt; sha=&lt;8&gt; revision=&lt;40位&gt;</code>（G2）</td></tr>
+<tr><td><code>scripts/robomme/check_memtokens.py</code></td><td>新建（S1）</td><td>G7 完整性：分片覆盖无缺口无重叠、全零行计数、view_order、全帧 offset、身份 meta、跨边界独立重算；全过才写完成标记 <code>data/robomme4task-v2/MEMTOKENS_DONE.json</code>（<code>extract_mem_tokens.py --finalize</code> 调用它）</td></tr>
+<tr><td><code>scripts/robomme/check_finite.py</code></td><td>新建（S1）</td><td>扫训练日志 loss／grad_norm／param_norm 无 nan/inf、读存档 raw 与 EMA 参数全有限、固定 4 个真实观测推理 50×8 有限；输出 <code>finite=PASS|FAIL</code>；含注入 NaN 合成批的自测（必须 FAIL）（J#9）</td></tr>
+<tr><td><code>scripts/robomme/upload_ckpt.sh</code></td><td>新建（S1）</td><td>由 policy 仓 <code>scripts/dataset/hf_export/run_ctxmotion160_ckpt_export.sh</code> 的做法改写：前置 G12 PASS，整目录传 HF 公开 bucket <code>HongzeFu/robomme-vla-4task-nativemem-20k-v1</code>，读回逐文件 sha256／字节／对象数，末行 <code>HF_VERIFY=PASS ckpts=1</code>（凭据只经 <code>set -a; . v1-store/secrets/hf.env</code>）</td></tr>
 </table>
 
 <h3>C2 S2 评估侧</h3>
@@ -192,6 +197,8 @@ blockquote{border-left:4px solid var(--line);margin:1em 0;padding:.4em 1em;color
 <tr><td><code>scripts/robomme/run_shard_nativemem.sh</code>、<code>local_692_pool_nativemem.sh</code></td><td>新建（由 policy 仓 <code>scripts/evaluation/</code> 同名脚本复制）</td><td>双根路径（第四版，取代第三版「source policy 仓 env.sh」）：<code>POLICY_SRC=/scratch/hongze/robomme_policy_learning_MotionJEPA</code> 只读（客户端源码、demo 前缀库、分片计划、preseed 错误表、<code>make_shard_plan.py</code>／<code>merge_shards.py</code>／<code>check_shard.py</code> 全用绝对路径调用）；<code>NM_RUN=/scratch/hongze/NativeMEM/runs/eval/&lt;run&gt;</code> 为一切输出、日志、gpu-slots、缓存落点；新建 fork 自己的 <code>scripts/robomme/eval_env.sh</code>，显式列出两个解释器：客户端 <code>POLICY_SRC/v1-store/envs/policy-eval-client</code>（<code>uv run --frozen --no-sync</code>，<code>UV_CACHE_DIR=/scratch/hongze/.cache/uv</code>，不写 policy 仓）、服务端 fork <code>.venv</code>；不 source policy 仓 <code>env.sh</code>；clean 检查对 policy 仓（只读确认）与 fork；<code>DRY_RUN=1</code> 打印全部解析后的绝对路径供验收；服务器换成 fork venv 的 <code>serve_nativemem.py</code>；客户端换成 C2 第 1 行副本（仍用 policy 仓 <code>v1-store/envs/policy-eval-client</code> 解释器）；去掉 <code>check_checkpoint.py</code> 与 motion 变量，改为检查存档含 <code>params/</code> 与 <code>assets/robomme4task/norm_stats.json</code>；保留端口、healthz、进程树、cleanup trap、demo 前缀库、<code>EXPECT_DEMO_INJECT=1</code>、种子 7、每卡 <code>EVAL_PER_GPU</code>（默认 4，32 片；3 份时 24 片，硬断言 <code>SHARDS == 8*PER_GPU</code>）、<code>--g6b</code> 与 <code>--g6b-capacity</code>；分片计划与合并只读调用 policy 仓 <code>make_shard_plan.py</code>／<code>merge_shards.py</code>／<code>check_shard.py</code>。</td></tr>
 <tr><td><code>scripts/robomme/check_online_token.py</code></td><td>新建</td><td>取 32 帧：离线行 vs 在线原版预处理（V17 pkl 256 原图 → <code>resize_with_pad</code> → encoder）；另取 BinFill 前缀库帧（前视 PNG、腕部 JPEG q90）；记录 <code>max_abs</code>、<code>cos_min</code>，只记录不拦截、不设阈值，末行 <code>ONLINE_TOKEN=RECORDED n=&lt;n&gt; max_abs=&lt;x&gt; cos_min=&lt;y&gt;</code>。 第四版拆分（J#8）：本脚本同时输出硬闸门 <code>ENCODER_IMPL</code>（同一批 224 像素，服务器路径 vs 离线抽取函数，max_abs≤1e-5、范数比 [0.999,1.001]）与只记录的 <code>ONLINE_TOKEN=RECORDED</code>。</td></tr>
 <tr><td><code>scripts/robomme/test_serve_protocol.py</code></td><td>新建</td><td>CPU 假策略：按客户端顺序发 reset／add_buffer（含演示帧，D 非 12 倍数）／infer，核对记忆帧号（含 0、含 t、间隔 12）与缓存命中。</td></tr>
+<tr><td><code>scripts/robomme/online_token_frames.json</code></td><td>新建（S2）</td><td>冻结 G9a／G9b 用的帧身份（32 个执行帧＋BinFill 前缀库帧，覆盖两视角、demo／exec）</td></tr>
+<tr><td><code>scripts/robomme/nm_trigger.sh</code></td><td>新建（S2）</td><td>tmux <code>nm-trig</code> 里运行的监听：轮询 J#22 四条件（<code>runs/READY.json</code>、v17-eval 会话与日志 EXIT_CODE／RUN_NAME、8 卡显存、<code>mkdir runs/nm-trigger.lock</code>），成立后启动第 4 步；每次状态变化写一行日志供 Monitor 过滤（只读查询 nvidia-smi 间隔 60 s）</td></tr>
 </table>
 
 <h2>D. 子代理分配表</h2>
@@ -199,8 +206,8 @@ blockquote{border-left:4px solid var(--line);margin:1em 0;padding:.4em 1em;color
 <tr><th>编号</th><th>目标</th><th>可写集合</th><th>禁触</th><th>接口契约</th><th>合并顺序</th><th>验收（worktree、CPU）</th><th>资源</th></tr>
 <tr><td>S0</td><td>建库脚本（先行）</td><td><code>scripts/robomme/build_data_v2.py</code>、<code>run_data_v2.sh</code> 及其故障注入单测</td><td>policy 仓；fork 主检出；S1／S2 文件</td><td>输出每集 H5 schema（C1 第 1 行）与 G1 判定行</td><td>0（最先合入，之后主会话重抽数据）</td><td>CPU 单测：4 种故障注入必 FAIL、一集小样正向通过</td><td>无 GPU</td></tr>
 <tr><td>S1</td><td>训练侧</td><td>C1 中除 <code>build_data_v2.py</code>／<code>run_data_v2.sh</code> 外全部</td><td>policy 仓；fork 主检出；C2 文件</td><td>提供配置名 <code>nativemem_pi05_robomme4task</code>、<code>robomme_policy.py</code>、encoder 加载函数（S2 import）；推理输入 <code>observation/image</code>、<code>observation/wrist_image</code>（uint8 256×256×3）、<code>observation/state</code>（8）、<code>prompt</code>、<code>memory</code>（f32 [T,2,1152]）；输出 <code>actions</code>（50×8 绝对）</td><td>1</td><td><code>JAX_PLATFORMS=cpu UV_PROJECT_ENVIRONMENT=/scratch/hongze/NativeMEM/.venv PYTHONPATH=$PWD/src uv run --no-sync python -m pytest scripts/robomme/test_robomme_s1.py -q</code>；<code>bash -n</code> 两份 shell</td><td>无 GPU</td></tr>
-<tr><td>S2</td><td>评估侧</td><td>C2 全部</td><td>同上；C1 文件只读</td><td>按 S1 契约；客户端副本对原文件 diff 只许 C2 第 1 行列出的 ①–④ 具名 hunk</td><td>2</td><td><code>pytest scripts/robomme/test_serve_protocol.py -q</code>；<code>DRY_RUN=1</code> 空跑；<code>diff -r</code> 客户端副本与原文件</td><td>无 GPU</td></tr>
-<tr><td>主会话</td><td>数据重抽、归一化、起跑、监控、上传、档案、状态机</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>8 卡（第 4 步起）</td></tr>
+<tr><td>S2</td><td>评估侧</td><td>C2 全部</td><td>同上；C1 文件只读</td><td>按 S1 契约（含 S1 离线抽取函数供 <code>check_online_token.py</code> 调用）；客户端副本对原文件 <code>diff -r</code> 只许 ①–③ 三处文件 hunk，④ 是启动参数</td><td>2</td><td><code>pytest scripts/robomme/test_serve_protocol.py -q</code>；<code>DRY_RUN=1</code> 空跑；<code>diff -r</code> 客户端副本与原文件</td><td>无 GPU</td></tr>
+<tr><td>主会话</td><td>数据重抽、归一化、写 <code>runs/READY.json</code>（G0–G6a、G1、S0–S2 合入、G2–G5、G10a 全 PASS 后）、起跑、监控、执行上传脚本、档案、状态机</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>8 卡（第 4 步起）</td></tr>
 </table>
 <p>合并：每块 <code>PRE_MERGE_REVIEW</code>（一个 sonnet，钉死 BASE／TIP，核对 X 表外无新偏离）→ <code>git merge --no-ff &lt;TIP&gt;</code> → 主检出复跑验收 → <code>POST_MERGE_REVIEW</code> → push。worktree 清理推迟到第 5 步通过后。</p>
 
@@ -230,16 +237,16 @@ blockquote{border-left:4px solid var(--line);margin:1em 0;padding:.4em 1em;color
 
 <h2>F. runbook</h2>
 <pre><code># 开工令后
-G0 审查 → 主会话起 nm-data2（下载 14 归档 + 流式 build_data_v2，组完成即删）→ G1
+G0 审查 → 派 S0（build_data_v2 + 故障注入单测）→ 审查合入 → 主会话起 nm-data2（下载 14 归档 + 流式 build_data_v2，组完成即删）→ G1
 并行：派 S1、S2 → 审查合并 → 主检出 CPU：compute_norm_stats_robomme.py（G4）、run_train.sh --check-only（G2 G3 G5 G6）
 
 # 触发（detached tmux nm-trig，J#22 四条件同时成立即起第 4 步；不看 V17 成败）：① READY.json（本轮 CPU 准备完成）；② tmux '=v17-eval' 不存在且 v17-eval.log 末尾有 EXIT_CODE= 行、RUN_NAME=local692-ctx-motion160-50k；③ 8 卡 memory.used 均 &lt; 2000 MiB；④ mkdir runs/nm-trigger.lock 成功
 #   参考日志 v1-store/logs/v17-eval.log（EVAL692=PASS|FAIL、EXIT_CODE=）只记录不作条件；会话中断时新会话按 current.json running_handles 重挂
 
 # 第 4 步 nm-memtok：extract_mem_tokens.py --init；8 卡各一片；--finalize（G7）
-# 第 5 步：run_train.sh --smoke（nm-smoke，G8）；check_online_token.py（G9）；
+# 第 5 步：G6b 真库取样（S1 单测对真库）；run_train.sh --smoke（nm-smoke，G8）→ run_train.sh --resume-smoke（G8b）；check_online_token.py（G9）；
 #         local_692_pool_nativemem.sh --g6b &lt;nm-smoke20/19&gt; 7（nm-g6b，G10）；--g6b-capacity（nm-cap4/3，G11）；清理 nm-smoke20 全部产物
-# 第 6 步：commitNM&lt;x&gt;.&lt;y&gt;Beta、工作区干净 → run_train.sh --formal（nm-train，G12）；G12 通过（nm-train 日志 EXIT_CODE=0、目录名恰为 19999 且无 orbax tmp 后缀、读回成功）后，整目录（params＋assets＋train_state，约 50 GB）传 HF 公开 bucket HongzeFu/robomme-vla-4task-nativemem-20k-v1（nm-ckptup，G13）
+# 第 6 步：commitNM&lt;x&gt;.&lt;y&gt;Beta、工作区干净 → run_train.sh --formal（nm-train，G12）；G12 通过（nm-train 日志 EXIT_CODE=0、目录名恰为 19999 且无 orbax tmp 后缀、读回成功）后，整目录（params＋assets＋train_state，逻辑约 53.7 GB）传 HF 公开 bucket HongzeFu/robomme-vla-4task-nativemem-20k-v1（nm-ckptup，G13）
 # 第 7 步：local_692_pool_nativemem.sh &lt;19999&gt; 7（nm-eval，G14）；写档案、提交推送、更新 current.json
 </code></pre>
 
@@ -266,7 +273,7 @@ G0 审查 → 主会话起 nm-data2（下载 14 归档 + 流式 build_data_v2，
 
 <h2>I. 留档、commit 与状态机</h2>
 <ul>
-<li>计划文件：fork <code>/scratch/hongze/NativeMEM</code> 根目录 <code>1116-nativemem-4task-stage2-plan.html</code>（11-16 由 policy 仓 <code>b637d50</code> 移入；policy 仓同名文件删除，避免两份）。一切结果（档案、判定行、评估汇总、图表、脚本）尽可能放 fork（用户 11-16 原话）；大体量产物（数据、token、存档）落 fork 的 git 忽略目录 <code>data/</code>、<code>checkpoints/</code>、<code>runs/</code>，在档案里记路径与 sha256。</li>
+<li>计划文件：fork <code>/scratch/hongze/NativeMEM</code> 根目录 <code>1116-nativemem-4task-stage2-plan.html</code>（11-16 由 policy 仓 <code>b637d50</code> 版本移入，policy 仓在 <code>5809a5b</code> 删除同名文件，避免两份）。一切结果（档案、判定行、评估汇总、图表、脚本）尽可能放 fork（用户 11-16 原话）；大体量产物（数据、token、存档）落 fork 的 git 忽略目录 <code>data/</code>、<code>checkpoints/</code>、<code>runs/</code>，在档案里记路径与 sha256。</li>
 <li>训练档案：fork <code>docs/training-doc/nativemem-4task1600-b128-20k/</code>；评估档案 <code>docs/training-doc/local692-nativemem-20k/</code>。</li>
 <li>状态机：获批后在 fork 新建 <code>docs/handoff/current.json</code>，任务 id <code>nm-4task-stage2-train</code>，写 <code>kind: go</code> 原话与 <code>plan.sha</code>；交接前必须完成 G12、G14 与档案提交；长尾 = 存档上传（<code>nm-ckptup</code>，完成行 <code>HF_VERIFY=PASS ckpts=1</code>）；上游依赖 = policy 仓 V17 692 局评估（只读判定）。 触发监听由主会话在 detached tmux <code>nm-trig</code> 里运行（列入 R9 与 <code>running_handles</code>），条件按 J#22 四条件；上游 V17 未登记在 policy 仓 current.json，<code>depends_on</code> 记为只读复核的跨会话条件 <code>{path: /scratch/hongze/robomme_policy_learning_MotionJEPA, branch: v17-4task-ctx-motion160-v7-50k, task: v17-eval（未登记）, evidence: v17-eval.log 的 EXIT_CODE 行与 RUN_NAME、tmux、nvidia-smi}</code>。</li>
 </ul>
@@ -288,7 +295,7 @@ G0 审查 → 主会话起 nm-data2（下载 14 归档 + 流式 build_data_v2，
 <tr><td>11 P2</td><td>归一化统计口径</td><td>50 步动作全部减<b>当前锚点</b> state 的前 7 维（与 <code>DeltaActions</code> 一致）、夹爪绝对、窗口尾部重复末帧；变换前 <code>copy()</code> 防原地修改；判定行 <code>NORM_STATS=PASS states=605611 action_vectors=30280550</code>；单测验证尾部重复、夹爪不减、重复读取底层数据不变</td></tr>
 <tr><td>12 P2</td><td>逆变换未写全</td><td>输出链 <code>Unnormalize→AbsoluteActions(make_bool_mask(7,-1))→前 8 维</code>（第三版已写）；加数值回环单测：非零 state、已知动作 → 正变换 → 逆变换误差 ≤1e-5</td></tr>
 <tr><td>13 P2</td><td>统计量是否真被加载</td><td>服务器显式加载存档 <code>assets/robomme4task/norm_stats.json</code> 并核 sha256 == G4 产物（第三版已写）；G10 判定行加 <code>norm_sha=&lt;8&gt;</code></td></tr>
-<tr><td>14 P2</td><td>seed 7 未落实到模型</td><td>服务器 <code>--seed 7</code> → 构造策略时 <code>rng=jax.random.key(7)</code> 显式传入；reset 不重播（与现行 policy 仓服务器同语义，S2 读其 <code>serve_policy.py</code> 核实后写入）；G10 打印实际 rng 来源</td></tr>
+<tr><td>14 P2</td><td>seed 7 未落实到模型</td><td>服务器 <code>--seed 7</code> → 构造策略时 <code>rng=jax.random.key(7)</code> 显式传入；reset 不重播（S2 读 policy 仓 <code>scripts/training/serve_policy.py</code> 的 <code>--seed</code> 用法核实，若语义不同按其执行并在合并报告写明）；C2 <code>serve_nativemem.py</code> 带 <code>--seed 7</code>；G10 打印实际 rng 来源</td></tr>
 <tr><td>15 P2</td><td>BinFill 前缀腕部 q90</td><td>X13 已登记；G9b 分层统计含该来源</td></tr>
 <tr><td>16 P2</td><td>帧号／重复 infer／跨局隔离</td><td>只有 add_buffer 推进历史，infer 不追加；协议单测：D=5 时两轮记忆帧号 [0,5] 与 [0,5,17,29,41,53]；两局之间 reset 后缓存为空、帧号归零；核对实际 <code>Observation.memory</code> 形状与 <code>memory_mask</code></td></tr>
 <tr><td>17 P2</td><td>评估上界</td><td>执行步数口径如实为最多 2001 步（<code>count &gt; max_steps</code> 后判停，沿用历史口径）；服务器记忆行数 &gt; 640 时<b>报错</b>而不截断；当前 BinFill 前缀库最大 D=1107，(1107+2001)/12+1≈260 帧×2=520 &lt; 640</td></tr>
