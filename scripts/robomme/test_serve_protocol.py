@@ -414,7 +414,8 @@ echo "$step|$*" >> "$STUB_CALLS"
 if [[ "${STUB_FAIL:-}" == "$step" ]]; then echo "STUB_${step}=FAIL"; exit 1; fi
 case "$step" in
   memtok) [[ " $* " == *" --finalize "* ]] && echo "MEMTOKENS=PASS rows=1192918 views=2 dim=1152 nonfinite=0 zero_rows=0 shards=8/8 gaps=0 overlaps=0 recompute=64/64"
-          [[ " $* " == *" --shard-index 3 "* && "${STUB_SHARD_FAIL:-}" == 1 ]] && exit 7 ;;
+          [[ " $* " == *" --shard-index 3 "* && "${STUB_SHARD_FAIL:-}" == 1 ]] && exit 7
+          [[ " $* " == *" --shard-index "* && -n "${STUB_SHARD_SLEEP:-}" ]] && { echo "$$" >> "$STUB_CALLS.pids"; sleep "$STUB_SHARD_SLEEP"; } ;;
   dataset_smoke) echo "DATASET_SMOKE=PASS n=605611 samples=64" ;;
   smoke20) echo "SMOKE20=PASS steps=20 save_load=PASS rotate=PASS exit=0 finite=PASS" ;;
   resume) echo "RESUME=PASS first_step=20 exit=0" ;;
@@ -422,6 +423,7 @@ case "$step" in
   g6b) echo "EVAL_LOAD_SMOKE=PASS episodes=1 handshake=PASS share2=PASS peak_mem_gb=30 norm_sha=abcd1234" ;;
   capacity) if [[ " $* " == *" EVAL_PER_GPU=4 "* ]]; then
               if [[ "${STUB_CAP4_FAIL:-}" == 1 ]]; then echo "EVAL_CAPACITY=FAIL per_gpu=4 peak_mem_gb=79 free_gb=1"; exit 1; fi
+              if [[ "${STUB_CAP4_RC:-}" == 1 ]]; then echo "E0_GATE=FAIL store=x line=missing"; exit 2; fi
               echo "EVAL_CAPACITY=PASS per_gpu=4 peak_mem_gb=60 free_gb=20"
             else echo "EVAL_CAPACITY=PASS per_gpu=3 peak_mem_gb=50 free_gb=30"; fi ;;
   formal) [[ "$1" == bash ]] && echo "TRAIN_FINAL=PASS step=19999 ckpts=1 finite=PASS exit=0 ckpt_dirs=[19999 ]" ;;
@@ -469,6 +471,8 @@ def test_nm_pipeline_all_pass_order_and_state(tmp_path):
     assert "--init" in memtok[0] and "--finalize" in memtok[-1] and len(memtok) == 10
     assert sorted(c.split("CUDA_VISIBLE_DEVICES=")[1][0] for c in memtok[1:9]) == list("01234567")
     assert any(c.startswith("formal|tmux new-session -d -s nm-ckptup") for c in calls)
+    for st in ("g6b|", "capacity|"):   # 审查 F1：固定用冒烟第 19 步存档
+        assert [c for c in calls if c.startswith(st)][0].endswith("/nm-smoke20/19 7")
     assert [c for c in calls if c.startswith("eval|")][0].startswith("eval|env EVAL_PER_GPU=4 ")
     assert any(c.startswith("cleanup_smoke|rm -rf -- ") and c.endswith("/checkpoints/nativemem_pi05_robomme4task/nm-smoke20")
                for c in calls)
@@ -510,3 +514,36 @@ def test_nm_pipeline_need_beta_and_bad_from(tmp_path):
     assert not any(c.startswith("formal|") for c in calls)
     r, _, _ = _run_pipe(tmp_path, repo, stub, NM_PIPELINE_FROM="nope")
     assert r.returncode == 2 and "reason=unknown_from(nope)" in r.stdout
+
+
+def test_nm_pipeline_capacity_nonfail_rc_dies_without_fallback(tmp_path):
+    repo, stub = _pipe_repo(tmp_path)
+    r, calls, started = _run_pipe(tmp_path, repo, stub, NM_PIPELINE_FROM="capacity", STUB_CAP4_RC="1")
+    assert r.returncode != 0 and "NM_PIPELINE=FAIL step=capacity reason=capacity_rc(per_gpu=4 rc=2)" in r.stdout
+    assert "CAPACITY_FALLBACK" not in r.stdout
+    assert not any("EVAL_PER_GPU=3" in c for c in calls) and not (tmp_path / "out" / "state.json").exists()
+
+
+def test_nm_pipeline_errexit_path_prints_fail_line(tmp_path):
+    repo, stub = _pipe_repo(tmp_path)
+    (tmp_path / "out" / "state.json").mkdir(parents=True)     # 写 state 时 set -e 触发（目标是目录）
+    r, calls, started = _run_pipe(tmp_path, repo, stub, NM_PIPELINE_FROM="capacity")
+    assert r.returncode != 0
+    assert "NM_PIPELINE=FAIL step=capacity reason=unexpected_rc" in r.stdout, r.stdout + r.stderr
+    assert "NM_STEP=cleanup_smoke start" not in r.stdout
+
+
+def test_nm_pipeline_memtok_failure_kills_own_shards(tmp_path):
+    import os
+    import time
+    repo, stub = _pipe_repo(tmp_path)
+    t0 = time.monotonic()
+    r, calls, started = _run_pipe(tmp_path, repo, stub, STUB_SHARD_FAIL="1", STUB_SHARD_SLEEP="60")
+    assert time.monotonic() - t0 < 30, "失败后没有收掉其余分片"
+    assert r.returncode != 0 and "NM_PIPELINE=FAIL step=memtok reason=memtok_shard_failed[3]" in r.stdout
+    kills = [l for l in r.stdout.splitlines() if l.startswith("MEMTOK_SHARD_KILL")]
+    assert len(kills) == 7 and not any("shard=3 " in l for l in kills)
+    started_pids = {l.split("pid=")[1].split()[0] for l in r.stdout.splitlines() if l.startswith("MEMTOK_SHARD_STARTED")}
+    assert {l.split("pid=")[1] for l in kills} <= started_pids    # 只杀自己起的进程
+    for pid in started_pids:
+        assert not os.path.exists(f"/proc/{pid}") or open(f"/proc/{pid}/stat").read().split()[2] == "Z"
