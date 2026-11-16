@@ -248,7 +248,9 @@ def build_real_policy(args) -> NativeMemServePolicy:
     from openpi.robomme import mem_encoder
     from openpi.shared import normalize
     from openpi.training import config_nativemem
+    import openpi
 
+    print(f"OPENPI_FILE={openpi.__file__}", flush=True)   # 核实 import 的是哪一份源码（worktree / 主检出）
     ckpt = pathlib.Path(args.ckpt).resolve()
     if not (ckpt / "params").is_dir():
         raise FileNotFoundError(f"存档缺 params/：{ckpt}")

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import importlib.util
 import pathlib
 import sys
@@ -280,3 +281,67 @@ def test_client_wrist_e2e_sentinel():
         client._ws.close()
     assert pol.reseeds == 2
     print("CLIENT_WRIST_E2E=PASS episodes=2 infers=5 frames_ep1=[0,5]→[0,5,17,29,41,53] frames_ep2=[0,1,13,25]")
+
+
+# ── check_online_token.py 管线（打桩 S1 编码器；真实 V17 pkl 与 BinFill 前缀库只读）──────────────
+
+def test_check_online_token_pipeline_with_stub_encoder(tmp_path, monkeypatch):
+    import types
+
+    import cv2
+    import h5py
+    from openpi_client import image_tools
+
+    cot = _load("nm_check_online_token", HERE / "check_online_token.py")
+    if not (cot.PKL_DIR.is_dir() and (cot.DEMO_STORE / "index.json").is_file()):
+        pytest.skip("本机没有 V17 pkl 或 BinFill 前缀库")
+    frames_doc = json.loads(cot.DEFAULT_FRAMES.read_text(encoding="utf-8"))
+    assert len(frames_doc["exec_frames"]) == 32 and frames_doc["view_order"] == ["front", "wrist"]
+
+    def offline_frame(jpeg_bytes):
+        return cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)[:, :, ::-1].copy()
+
+    def online_frame(raw):
+        return image_tools.resize_with_pad(np.asarray(raw)[None], 224, 224)[0]
+
+    def encode_frames(enc, x):
+        x = np.asarray(x, dtype=np.float32)
+        return np.repeat(x.mean(axis=(1, 2, 3))[:, None], TOKEN_DIM, axis=1) / 255.0 + np.arange(TOKEN_DIM) * 1e-3
+
+    fake = types.ModuleType("openpi.robomme.mem_encoder")
+    fake.load_encoder = lambda path: object()
+    fake.encode_frames, fake.offline_frame, fake.online_frame = encode_frames, offline_frame, online_frame
+    pkg = types.ModuleType("openpi.robomme")
+    pkg.mem_encoder = fake
+    monkeypatch.setitem(sys.modules, "openpi.robomme", pkg)
+    monkeypatch.setitem(sys.modules, "openpi.robomme.mem_encoder", fake)
+
+    # 假每集 H5：只在冻结帧号放「前视 / 腕部」两张不同的 224 JPEG
+    ep_dir = tmp_path / "data" / "episodes"
+    ep_dir.mkdir(parents=True)
+    by_ep = {}
+    for fr in frames_doc["exec_frames"]:
+        by_ep.setdefault(fr["global_episode_idx"], []).append(fr["t"])
+    for g, ts in by_ep.items():
+        n = max(ts) + 1
+        bufs = {}
+        for v, val in (("front", 60), ("wrist", 190)):
+            ok, enc = cv2.imencode(".jpg", np.full((224, 224, 3), val, np.uint8), [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+            arr = np.empty(n, dtype=object)
+            for t in range(n):
+                arr[t] = enc.reshape(-1)
+            bufs[v] = arr
+        with h5py.File(ep_dir / f"ep_{g:04d}.h5", "w") as h:
+            for v in ("front", "wrist"):
+                h.create_dataset(f"{v}_jpeg", data=bufs[v], dtype=h5py.vlen_dtype(np.uint8))
+    report = tmp_path / "report.json"
+    args = types.SimpleNamespace(frames=str(cot.DEFAULT_FRAMES), data_root=str(tmp_path / "data"), memtokens="",
+                                 encoder_params="stub", offline_batch=7, report=str(report))
+    assert cot.run(args) == 0
+    rep = json.loads(report.read_text(encoding="utf-8"))
+    assert rep["g9a_pass"] and rep["g9a"]["n"] == 64 and rep["g9a"]["max_abs"] <= 1e-5
+    assert set(rep["g9b_strata"]) == {"exec/front", "exec/wrist", "binfill_prefix/front", "binfill_prefix/wrist"}
+    assert rep["n_exec_frames"] == 32 and rep["n_prefix_frames"] == 8
+    # 反例：尺度差 1%（权重或预处理尺度错误）时 G9a 必须 FAIL；完全相同时 PASS
+    s = cot.pair_stats(np.ones((4, 8)), np.ones((4, 8)) * 1.01)
+    assert not cot.g9a_verdict(s) and cot.g9a_verdict(cot.pair_stats(np.ones((4, 8)), np.ones((4, 8))))

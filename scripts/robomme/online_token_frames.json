@@ -1,0 +1,348 @@
+{
+  "version": 1,
+  "purpose": "G9a ENCODER_IMPL / G9b ONLINE_TOKEN 冻结帧身份（1116 计划 J#8）",
+  "view_order": [
+    "front",
+    "wrist"
+  ],
+  "row_rule": "row = episode_manifest.episodes[e].total_sample_offset + t（t 含演示帧）",
+  "sources": {
+    "episode_manifest": "/scratch/hongze/robomme_policy_learning_MotionJEPA/v1-store/datasets/4task-v2-1600ep-604f16da/meta/episode_manifest.json",
+    "pkl_dir": "/scratch/hongze/robomme_policy_learning_MotionJEPA/v1-store/datasets/4task-v2-1600ep-604f16da/source/data",
+    "episode_manifest_sha256": "4cd5a170b0ed9718922bfd7c9287e80b3681a0ea7489dfdb07ddeb3a53dbb918",
+    "demo_prefix_store": "/scratch/hongze/robomme_policy_learning_MotionJEPA/v1-store/demo-prefix/binfill-3b4de03a0b46"
+  },
+  "note": "V17 pkl 只含执行帧，非 BinFill 任务的演示帧没有离线 raw 原图可取；演示帧分层只由 BinFill 前缀库帧代表（前视 PNG 无损、腕部 JPEG q90）。",
+  "exec_frames": [
+    {
+      "task": "BinFill",
+      "global_episode_idx": 0,
+      "raw_ep_idx": 0,
+      "t": 678,
+      "pkl_index": 0,
+      "row": 678,
+      "position": "exec_first"
+    },
+    {
+      "task": "BinFill",
+      "global_episode_idx": 0,
+      "raw_ep_idx": 0,
+      "t": 1355,
+      "pkl_index": 677,
+      "row": 1355,
+      "position": "episode_last"
+    },
+    {
+      "task": "BinFill",
+      "global_episode_idx": 133,
+      "raw_ep_idx": 133,
+      "t": 283,
+      "pkl_index": 62404,
+      "row": 125091,
+      "position": "exec_first"
+    },
+    {
+      "task": "BinFill",
+      "global_episode_idx": 133,
+      "raw_ep_idx": 133,
+      "t": 565,
+      "pkl_index": 62686,
+      "row": 125373,
+      "position": "episode_last"
+    },
+    {
+      "task": "BinFill",
+      "global_episode_idx": 266,
+      "raw_ep_idx": 266,
+      "t": 807,
+      "pkl_index": 147273,
+      "row": 295353,
+      "position": "exec_first"
+    },
+    {
+      "task": "BinFill",
+      "global_episode_idx": 266,
+      "raw_ep_idx": 266,
+      "t": 1613,
+      "pkl_index": 148079,
+      "row": 296159,
+      "position": "episode_last"
+    },
+    {
+      "task": "BinFill",
+      "global_episode_idx": 399,
+      "raw_ep_idx": 399,
+      "t": 1035,
+      "pkl_index": 255894,
+      "row": 512823,
+      "position": "exec_first"
+    },
+    {
+      "task": "BinFill",
+      "global_episode_idx": 399,
+      "raw_ep_idx": 399,
+      "t": 2069,
+      "pkl_index": 256928,
+      "row": 513857,
+      "position": "episode_last"
+    },
+    {
+      "task": "RouteStick",
+      "global_episode_idx": 400,
+      "raw_ep_idx": 0,
+      "t": 150,
+      "pkl_index": 256929,
+      "row": 514008,
+      "position": "exec_first"
+    },
+    {
+      "task": "RouteStick",
+      "global_episode_idx": 400,
+      "raw_ep_idx": 0,
+      "t": 299,
+      "pkl_index": 257078,
+      "row": 514157,
+      "position": "episode_last"
+    },
+    {
+      "task": "RouteStick",
+      "global_episode_idx": 533,
+      "raw_ep_idx": 133,
+      "t": 250,
+      "pkl_index": 276829,
+      "row": 553908,
+      "position": "exec_first"
+    },
+    {
+      "task": "RouteStick",
+      "global_episode_idx": 533,
+      "raw_ep_idx": 133,
+      "t": 499,
+      "pkl_index": 277078,
+      "row": 554157,
+      "position": "episode_last"
+    },
+    {
+      "task": "RouteStick",
+      "global_episode_idx": 666,
+      "raw_ep_idx": 266,
+      "t": 350,
+      "pkl_index": 310079,
+      "row": 620508,
+      "position": "exec_first"
+    },
+    {
+      "task": "RouteStick",
+      "global_episode_idx": 666,
+      "raw_ep_idx": 266,
+      "t": 699,
+      "pkl_index": 310428,
+      "row": 620857,
+      "position": "episode_last"
+    },
+    {
+      "task": "RouteStick",
+      "global_episode_idx": 799,
+      "raw_ep_idx": 399,
+      "t": 450,
+      "pkl_index": 363929,
+      "row": 728308,
+      "position": "exec_first"
+    },
+    {
+      "task": "RouteStick",
+      "global_episode_idx": 799,
+      "raw_ep_idx": 399,
+      "t": 899,
+      "pkl_index": 364378,
+      "row": 728757,
+      "position": "episode_last"
+    },
+    {
+      "task": "VideoRepick",
+      "global_episode_idx": 800,
+      "raw_ep_idx": 0,
+      "t": 299,
+      "pkl_index": 364379,
+      "row": 729057,
+      "position": "exec_first"
+    },
+    {
+      "task": "VideoRepick",
+      "global_episode_idx": 800,
+      "raw_ep_idx": 0,
+      "t": 739,
+      "pkl_index": 364819,
+      "row": 729497,
+      "position": "episode_last"
+    },
+    {
+      "task": "VideoRepick",
+      "global_episode_idx": 933,
+      "raw_ep_idx": 133,
+      "t": 271,
+      "pkl_index": 416533,
+      "row": 820507,
+      "position": "exec_first"
+    },
+    {
+      "task": "VideoRepick",
+      "global_episode_idx": 933,
+      "raw_ep_idx": 133,
+      "t": 678,
+      "pkl_index": 416940,
+      "row": 820914,
+      "position": "episode_last"
+    },
+    {
+      "task": "VideoRepick",
+      "global_episode_idx": 1066,
+      "raw_ep_idx": 266,
+      "t": 377,
+      "pkl_index": 469756,
+      "row": 919823,
+      "position": "exec_first"
+    },
+    {
+      "task": "VideoRepick",
+      "global_episode_idx": 1066,
+      "raw_ep_idx": 266,
+      "t": 655,
+      "pkl_index": 470034,
+      "row": 920101,
+      "position": "episode_last"
+    },
+    {
+      "task": "VideoRepick",
+      "global_episode_idx": 1199,
+      "raw_ep_idx": 399,
+      "t": 451,
+      "pkl_index": 522158,
+      "row": 1032965,
+      "position": "exec_first"
+    },
+    {
+      "task": "VideoRepick",
+      "global_episode_idx": 1199,
+      "raw_ep_idx": 399,
+      "t": 696,
+      "pkl_index": 522403,
+      "row": 1033210,
+      "position": "episode_last"
+    },
+    {
+      "task": "VideoUnmaskSwap",
+      "global_episode_idx": 1200,
+      "raw_ep_idx": 0,
+      "t": 168,
+      "pkl_index": 522404,
+      "row": 1033379,
+      "position": "exec_first"
+    },
+    {
+      "task": "VideoUnmaskSwap",
+      "global_episode_idx": 1200,
+      "raw_ep_idx": 0,
+      "t": 334,
+      "pkl_index": 522570,
+      "row": 1033545,
+      "position": "episode_last"
+    },
+    {
+      "task": "VideoUnmaskSwap",
+      "global_episode_idx": 1333,
+      "raw_ep_idx": 133,
+      "t": 168,
+      "pkl_index": 545006,
+      "row": 1074761,
+      "position": "exec_first"
+    },
+    {
+      "task": "VideoUnmaskSwap",
+      "global_episode_idx": 1333,
+      "raw_ep_idx": 133,
+      "t": 280,
+      "pkl_index": 545118,
+      "row": 1074873,
+      "position": "episode_last"
+    },
+    {
+      "task": "VideoUnmaskSwap",
+      "global_episode_idx": 1466,
+      "raw_ep_idx": 266,
+      "t": 216,
+      "pkl_index": 569660,
+      "row": 1121555,
+      "position": "exec_first"
+    },
+    {
+      "task": "VideoUnmaskSwap",
+      "global_episode_idx": 1466,
+      "raw_ep_idx": 266,
+      "t": 473,
+      "pkl_index": 569917,
+      "row": 1121812,
+      "position": "episode_last"
+    },
+    {
+      "task": "VideoUnmaskSwap",
+      "global_episode_idx": 1599,
+      "raw_ep_idx": 399,
+      "t": 318,
+      "pkl_index": 605337,
+      "row": 1192644,
+      "position": "exec_first"
+    },
+    {
+      "task": "VideoUnmaskSwap",
+      "global_episode_idx": 1599,
+      "raw_ep_idx": 399,
+      "t": 591,
+      "pkl_index": 605610,
+      "row": 1192917,
+      "position": "episode_last"
+    }
+  ],
+  "binfill_prefix_frames": [
+    {
+      "key": "BinFill/easy/155",
+      "frame": 0,
+      "D": 595
+    },
+    {
+      "key": "BinFill/easy/155",
+      "frame": 594,
+      "D": 595
+    },
+    {
+      "key": "BinFill/medium/153",
+      "frame": 0,
+      "D": 424
+    },
+    {
+      "key": "BinFill/medium/153",
+      "frame": 423,
+      "D": 424
+    },
+    {
+      "key": "BinFill/hard/153",
+      "frame": 0,
+      "D": 796
+    },
+    {
+      "key": "BinFill/hard/153",
+      "frame": 795,
+      "D": 796
+    },
+    {
+      "key": "BinFill/hard/154",
+      "frame": 0,
+      "D": 627
+    },
+    {
+      "key": "BinFill/hard/154",
+      "frame": 626,
+      "D": 627
+    }
+  ]
+}
