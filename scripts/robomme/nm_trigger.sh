@@ -3,6 +3,7 @@
 # 四个条件同时成立才起跑，且只起一次：
 #   ① $NM_ROOT/runs/READY.json 存在（本轮 CPU 准备全部通过，由主会话写）；
 #   ② tmux 会话 '=v17-eval' 不存在，且 V17 评估日志最后一个非空行是完整的 EXIT_CODE=<数字>，
+#      并且「文件以换行结尾」或「连续两轮读到的末行完全相同」（防止数字写到一半被判完成，审查 F1）；
 #      日志内能找到 RUN_NAME=<V17_RUN_NAME> 或 run=<V17_RUN_NAME>（只认身份，不看成败）；
 #   ③ nvidia-smi 列出 NGPU 张卡且每张 memory.used < MEM_MAX_MIB；
 #   ④ mkdir $NM_ROOT/runs/nm-trigger.lock 原子创建成功（防重复起跑）。
@@ -41,14 +42,19 @@ log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$LOG"; }
 
 # ── 四个条件（前三个只读）──
 cond_ready() { [[ -f "$READY" ]]; }
-cond_v17() {  # 打印细节；成立返回 0
-    if tmux has-session -t "=$V17_SESSION" 2>/dev/null; then echo "session_alive"; return 1; fi
-    [[ -f "$V17_LOG" ]] || { echo "log_missing"; return 1; }
-    local last
+V17_LAST_PREV=""   # 上一轮读到的末行（跨轮比较，不在子 shell 里改）
+cond_v17() {  # 结果写入 V17_DETAIL；成立返回 0
+    local last nl=0 stable=0
+    if tmux has-session -t "=$V17_SESSION" 2>/dev/null; then V17_DETAIL="session_alive"; V17_LAST_PREV=""; return 1; fi
+    [[ -f "$V17_LOG" ]] || { V17_DETAIL="log_missing"; V17_LAST_PREV=""; return 1; }
     last="$(grep -v '^[[:space:]]*$' "$V17_LOG" | tail -n 1)"
-    [[ "$last" =~ ^EXIT_CODE=[0-9]+$ ]] || { echo "no_exit_code_tail"; return 1; }
-    grep -Eq "(RUN_NAME=|run=)${V17_RUN_NAME}([^A-Za-z0-9_-]|\$)" "$V17_LOG" || { echo "run_name_mismatch"; return 1; }
-    echo "done(${last})"
+    [[ "$(tail -c 1 "$V17_LOG" | od -An -c | tr -d ' ')" == '\n' ]] && nl=1
+    [[ -n "$V17_LAST_PREV" && "$last" == "$V17_LAST_PREV" ]] && stable=1
+    V17_LAST_PREV="$last"
+    [[ "$last" =~ ^EXIT_CODE=[0-9]+$ ]] || { V17_DETAIL="no_exit_code_tail"; return 1; }
+    [[ "$nl" == 1 || "$stable" == 1 ]] || { V17_DETAIL="exit_code_unsettled(${last})"; return 1; }
+    grep -Eq "(RUN_NAME=|run=)${V17_RUN_NAME}([^A-Za-z0-9_-]|\$)" "$V17_LOG" || { V17_DETAIL="run_name_mismatch"; return 1; }
+    V17_DETAIL="done(${last} newline=$nl stable=$stable)"
 }
 cond_gpu() {  # 打印细节；成立返回 0
     local csv n bad
@@ -64,7 +70,7 @@ log "NM_TRIG_START once=$ONCE ready=$READY v17_session=$V17_SESSION v17_log=$V17
 PREV=""
 while true; do
     R=0; cond_ready && R=1
-    V="$(cond_v17)"; VOK=$?
+    cond_v17; VOK=$?; V="$V17_DETAIL"
     G="$(cond_gpu)"; GOK=$?
     STATE="ready=$R v17=$V gpu=$G"
     if [[ "$STATE" != "$PREV" || "$ONCE" == 1 ]]; then
