@@ -401,3 +401,112 @@ def test_nm_trigger_truncated_exit_code(tmp_path):
     # 锁已存在 → 再次运行拒绝
     r = _run_trigger(env)
     assert r.returncode == 3 and "NM_TRIGGER=REFUSED reason=lock_exists" in r.stdout
+
+
+# ── nm_pipeline.sh：步骤顺序、遇 FAIL 即停、NM_PIPELINE_FROM 续跑、capacity 回退（打桩外部命令）────────────
+
+PIPE_STEPS = ["memtok", "dataset_smoke", "smoke20", "resume", "online_token", "g6b", "capacity",
+              "cleanup_smoke", "formal", "eval"]
+
+STUB_SH = r'''#!/usr/bin/env bash
+step="$1"; shift
+echo "$step|$*" >> "$STUB_CALLS"
+if [[ "${STUB_FAIL:-}" == "$step" ]]; then echo "STUB_${step}=FAIL"; exit 1; fi
+case "$step" in
+  memtok) [[ " $* " == *" --finalize "* ]] && echo "MEMTOKENS=PASS rows=1192918 views=2 dim=1152 nonfinite=0 zero_rows=0 shards=8/8 gaps=0 overlaps=0 recompute=64/64"
+          [[ " $* " == *" --shard-index 3 "* && "${STUB_SHARD_FAIL:-}" == 1 ]] && exit 7 ;;
+  dataset_smoke) echo "DATASET_SMOKE=PASS n=605611 samples=64" ;;
+  smoke20) echo "SMOKE20=PASS steps=20 save_load=PASS rotate=PASS exit=0 finite=PASS" ;;
+  resume) echo "RESUME=PASS first_step=20 exit=0" ;;
+  online_token) echo "ENCODER_IMPL=PASS n=32 max_abs=0"; echo "ONLINE_TOKEN=RECORDED n=40" ;;
+  g6b) echo "EVAL_LOAD_SMOKE=PASS episodes=1 handshake=PASS share2=PASS peak_mem_gb=30 norm_sha=abcd1234" ;;
+  capacity) if [[ " $* " == *" EVAL_PER_GPU=4 "* ]]; then
+              if [[ "${STUB_CAP4_FAIL:-}" == 1 ]]; then echo "EVAL_CAPACITY=FAIL per_gpu=4 peak_mem_gb=79 free_gb=1"; exit 1; fi
+              echo "EVAL_CAPACITY=PASS per_gpu=4 peak_mem_gb=60 free_gb=20"
+            else echo "EVAL_CAPACITY=PASS per_gpu=3 peak_mem_gb=50 free_gb=30"; fi ;;
+  formal) [[ "$1" == bash ]] && echo "TRAIN_FINAL=PASS step=19999 ckpts=1 finite=PASS exit=0 ckpt_dirs=[19999 ]" ;;
+  eval) echo "EVAL692=PASS episodes=692 success=100 rate=0.1445 preseeded_errors=9 new_errors=0 retried=0" ;;
+esac
+exit 0
+'''
+
+
+def _pipe_repo(tmp_path, subject="commitNM1.5Beta: 起跑前锚点"):
+    import shutil
+    import subprocess
+    repo = tmp_path / "repo"
+    (repo / "scripts" / "robomme").mkdir(parents=True)
+    shutil.copy(HERE / "nm_pipeline.sh", repo / "scripts" / "robomme" / "nm_pipeline.sh")
+    for args in (["init", "-q"], ["add", "scripts/robomme/nm_pipeline.sh"],
+                 ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", subject]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True)
+    stub = tmp_path / "stub.sh"
+    stub.write_text(STUB_SH)
+    stub.chmod(0o755)
+    return repo, stub
+
+
+def _run_pipe(tmp_path, repo, stub, **extra):
+    import os
+    import subprocess
+    out = tmp_path / "out"
+    env = dict(os.environ, NM_PIPELINE_STUB=str(stub), NM_PIPELINE_LOGDIR=str(out / "logs"),
+               NM_PIPELINE_STATE=str(out / "state.json"), STUB_CALLS=str(tmp_path / "calls.txt"), **extra)
+    r = subprocess.run(["bash", str(repo / "scripts/robomme/nm_pipeline.sh")], env=env, capture_output=True,
+                       text=True, timeout=120)
+    calls = (tmp_path / "calls.txt").read_text().splitlines() if (tmp_path / "calls.txt").exists() else []
+    started = [l.split()[0].split("=")[1] for l in r.stdout.splitlines() if l.startswith("NM_STEP=") and " start " in l]
+    return r, calls, started
+
+
+def test_nm_pipeline_all_pass_order_and_state(tmp_path):
+    repo, stub = _pipe_repo(tmp_path)
+    r, calls, started = _run_pipe(tmp_path, repo, stub)
+    assert r.returncode == 0 and "NM_PIPELINE=PASS" in r.stdout, r.stdout + r.stderr
+    assert started == PIPE_STEPS
+    assert json.loads((tmp_path / "out" / "state.json").read_text())["per_gpu"] == 4
+    memtok = [c for c in calls if c.startswith("memtok|")]
+    assert "--init" in memtok[0] and "--finalize" in memtok[-1] and len(memtok) == 10
+    assert sorted(c.split("CUDA_VISIBLE_DEVICES=")[1][0] for c in memtok[1:9]) == list("01234567")
+    assert any(c.startswith("formal|tmux new-session -d -s nm-ckptup") for c in calls)
+    assert [c for c in calls if c.startswith("eval|")][0].startswith("eval|env EVAL_PER_GPU=4 ")
+    assert any(c.startswith("cleanup_smoke|rm -rf -- ") and c.endswith("/checkpoints/nativemem_pi05_robomme4task/nm-smoke20")
+               for c in calls)
+    for line in ("VERDICT[memtok] MEMTOKENS=PASS", "VERDICT[smoke20] SMOKE20=PASS", "VERDICT[eval] EVAL692=PASS"):
+        assert line in r.stdout
+
+
+def test_nm_pipeline_stops_at_first_fail(tmp_path):
+    repo, stub = _pipe_repo(tmp_path)
+    r, calls, started = _run_pipe(tmp_path, repo, stub, STUB_FAIL="smoke20")
+    assert r.returncode != 0
+    assert "NM_PIPELINE=FAIL step=smoke20 reason=smoke20_rc" in r.stdout
+    assert started == PIPE_STEPS[:3] and "NM_PIPELINE=PASS" not in r.stdout
+    assert not any(c.startswith(("resume|", "formal|", "eval|")) for c in calls)
+    assert len([c for c in calls if c.startswith("smoke20|")]) == 1          # 不自动重试
+
+
+def test_nm_pipeline_shard_failure_stops(tmp_path):
+    repo, stub = _pipe_repo(tmp_path)
+    r, calls, started = _run_pipe(tmp_path, repo, stub, STUB_SHARD_FAIL="1")
+    assert r.returncode != 0 and "NM_PIPELINE=FAIL step=memtok reason=memtok_shard_failed[3]" in r.stdout
+    assert not any("--finalize" in c for c in calls) and started == ["memtok"]
+
+
+def test_nm_pipeline_from_and_capacity_fallback(tmp_path):
+    repo, stub = _pipe_repo(tmp_path)
+    r, calls, started = _run_pipe(tmp_path, repo, stub, NM_PIPELINE_FROM="capacity", STUB_CAP4_FAIL="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert started == PIPE_STEPS[6:]
+    assert all(f"NM_STEP={s} skipped(from=capacity)" in r.stdout for s in PIPE_STEPS[:6])
+    assert json.loads((tmp_path / "out" / "state.json").read_text())["per_gpu"] == 3
+    assert [c for c in calls if c.startswith("eval|")][0].startswith("eval|env EVAL_PER_GPU=3 ")
+
+
+def test_nm_pipeline_need_beta_and_bad_from(tmp_path):
+    repo, stub = _pipe_repo(tmp_path, subject="commitNM1.5: 普通功能提交")
+    r, calls, started = _run_pipe(tmp_path, repo, stub, NM_PIPELINE_FROM="formal")
+    assert r.returncode != 0 and "NM_PIPELINE=FAIL step=formal reason=need_beta" in r.stdout
+    assert not any(c.startswith("formal|") for c in calls)
+    r, _, _ = _run_pipe(tmp_path, repo, stub, NM_PIPELINE_FROM="nope")
+    assert r.returncode == 2 and "reason=unknown_from(nope)" in r.stdout
