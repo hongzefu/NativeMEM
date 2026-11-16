@@ -290,7 +290,8 @@ def test_check_online_token_pipeline_with_stub_encoder(tmp_path, monkeypatch):
 
     import cv2
     import h5py
-    from openpi_client import image_tools
+
+    from openpi.robomme import mem_encoder
 
     cot = _load("nm_check_online_token", HERE / "check_online_token.py")
     if not (cot.PKL_DIR.is_dir() and (cot.DEMO_STORE / "index.json").is_file()):
@@ -298,23 +299,14 @@ def test_check_online_token_pipeline_with_stub_encoder(tmp_path, monkeypatch):
     frames_doc = json.loads(cot.DEFAULT_FRAMES.read_text(encoding="utf-8"))
     assert len(frames_doc["exec_frames"]) == 32 and frames_doc["view_order"] == ["front", "wrist"]
 
-    def offline_frame(jpeg_bytes):
-        return cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)[:, :, ::-1].copy()
-
-    def online_frame(raw):
-        return image_tools.resize_with_pad(np.asarray(raw)[None], 224, 224)[0]
-
+    # 只打桩权重加载与编码（真实编码器的 CPU 小样另见 check_online_token.py run --g9a-only）；
+    # offline_frame / online_frame 与 extract_mem_tokens.encode_episode_chunk 都用 S1 真实实现
     def encode_frames(enc, x):
         x = np.asarray(x, dtype=np.float32)
         return np.repeat(x.mean(axis=(1, 2, 3))[:, None], TOKEN_DIM, axis=1) / 255.0 + np.arange(TOKEN_DIM) * 1e-3
 
-    fake = types.ModuleType("openpi.robomme.mem_encoder")
-    fake.load_encoder = lambda path: object()
-    fake.encode_frames, fake.offline_frame, fake.online_frame = encode_frames, offline_frame, online_frame
-    pkg = types.ModuleType("openpi.robomme")
-    pkg.mem_encoder = fake
-    monkeypatch.setitem(sys.modules, "openpi.robomme", pkg)
-    monkeypatch.setitem(sys.modules, "openpi.robomme.mem_encoder", fake)
+    monkeypatch.setattr(mem_encoder, "load_encoder", lambda path: object())
+    monkeypatch.setattr(mem_encoder, "encode_frames", encode_frames)
 
     # 假每集 H5：只在冻结帧号放「前视 / 腕部」两张不同的 224 JPEG
     ep_dir = tmp_path / "data" / "episodes"
@@ -332,11 +324,13 @@ def test_check_online_token_pipeline_with_stub_encoder(tmp_path, monkeypatch):
                 arr[t] = enc.reshape(-1)
             bufs[v] = arr
         with h5py.File(ep_dir / f"ep_{g:04d}.h5", "w") as h:
+            h.attrs["num_timesteps"] = n
             for v in ("front", "wrist"):
                 h.create_dataset(f"{v}_jpeg", data=bufs[v], dtype=h5py.vlen_dtype(np.uint8))
     report = tmp_path / "report.json"
     args = types.SimpleNamespace(frames=str(cot.DEFAULT_FRAMES), data_root=str(tmp_path / "data"), memtokens="",
-                                 encoder_params="stub", offline_batch=7, report=str(report))
+                                 encoder_params="stub", max_exec_frames=0, g9a_only=False,
+                                 report=str(report))
     assert cot.run(args) == 0
     rep = json.loads(report.read_text(encoding="utf-8"))
     assert rep["g9a_pass"] and rep["g9a"]["n"] == 64 and rep["g9a"]["max_abs"] <= 1e-5
@@ -345,3 +339,65 @@ def test_check_online_token_pipeline_with_stub_encoder(tmp_path, monkeypatch):
     # 反例：尺度差 1%（权重或预处理尺度错误）时 G9a 必须 FAIL；完全相同时 PASS
     s = cot.pair_stats(np.ones((4, 8)), np.ones((4, 8)) * 1.01)
     assert not cot.g9a_verdict(s) and cot.g9a_verdict(cot.pair_stats(np.ones((4, 8)), np.ones((4, 8))))
+
+
+def test_check_online_token_manifest_pin_mismatch_refuses(tmp_path):
+    cot = _load("nm_check_online_token_pin", HERE / "check_online_token.py")
+    frames_doc = json.loads(cot.DEFAULT_FRAMES.read_text(encoding="utf-8"))
+    if not pathlib.Path(frames_doc["sources"]["episode_manifest"]).is_file():
+        pytest.skip("本机没有 V17 episode_manifest")
+    assert cot.check_manifest_pin(frames_doc) == frames_doc["sources"]["episode_manifest_sha256"]
+    bad = json.loads(json.dumps(frames_doc))
+    bad["sources"]["episode_manifest_sha256"] = "0" * 64
+    with pytest.raises(SystemExit, match="MANIFEST_PIN=FAIL"):
+        cot.check_manifest_pin(bad)
+
+
+# ── nm_trigger.sh：V17 日志末行 EXIT_CODE 必须写完整（审查 F1）──────────────────────────
+
+def _trigger_env(tmp_path):
+    import os
+    fsmi = tmp_path / "fsmi"
+    fsmi.write_text('#!/usr/bin/env bash\nfor i in 0 1 2 3 4 5 6 7; do echo "$i, 5"; done\n')
+    fsmi.chmod(0o755)
+    (tmp_path / "nm" / "runs").mkdir(parents=True)
+    (tmp_path / "nm" / "runs" / "READY.json").write_text("{}")
+    env = dict(os.environ, NM_ROOT=str(tmp_path / "nm"), V17_SESSION="s2-test-nonexistent-session",
+               V17_LOG=str(tmp_path / "v17.log"), NVIDIA_SMI=str(fsmi), POLL_S="1",
+               NM_TRIG_CMD="echo STEP4_GO")
+    return env
+
+
+def _run_trigger(env, *args, timeout=30):
+    import subprocess
+    return subprocess.run(["bash", str(HERE / "nm_trigger.sh"), *args], env=env, capture_output=True,
+                          text=True, timeout=timeout)
+
+
+def test_nm_trigger_truncated_exit_code(tmp_path):
+    import threading
+    import time
+
+    env = _trigger_env(tmp_path)
+    log = tmp_path / "v17.log"
+    head = "LOCAL692_START mode=eval run=local692-ctx-motion160-50k\n"
+    # 截断：末行 EXIT_CODE=1 但没有换行，单轮（--once）不能判完成
+    log.write_text(head + "EXIT_CODE=1")
+    r = _run_trigger(env, "--once")
+    assert r.returncode == 1 and "exit_code_unsettled(EXIT_CODE=1)" in r.stdout, r.stdout
+    # 写完整（带换行）→ 单轮即成立
+    log.write_text(head + "EXIT_CODE=0\n")
+    r = _run_trigger(env, "--once")
+    assert r.returncode == 0 and "newline=1" in r.stdout, r.stdout
+    # 数字还在增长：第 1 轮读到 EXIT_CODE=1，0.5 s 后补成 EXIT_CODE=13（仍无换行）；
+    # 第 2 轮末行变了 → 仍不成立；第 3 轮与第 2 轮相同 → 成立，起跑时末行必须是 EXIT_CODE=13
+    log.write_text(head + "EXIT_CODE=1")
+    threading.Timer(0.5, lambda: log.write_text(head + "EXIT_CODE=13")).start()
+    r = _run_trigger(env)
+    assert r.returncode == 0, r.stdout
+    fired = [l for l in r.stdout.splitlines() if "NM_TRIGGER=FIRED" in l]
+    assert len(fired) == 1 and "done(EXIT_CODE=13 newline=0 stable=1)" in fired[0], r.stdout
+    assert "STEP4_GO" in r.stdout and "NM_TRIGGER_CMD_EXIT=0" in r.stdout
+    # 锁已存在 → 再次运行拒绝
+    r = _run_trigger(env)
+    assert r.returncode == 3 and "NM_TRIGGER=REFUSED reason=lock_exists" in r.stdout
