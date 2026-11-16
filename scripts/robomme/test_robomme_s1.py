@@ -17,6 +17,9 @@ import time
 
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 os.environ.setdefault("OPENPI_DATA_HOME", "/scratch/hongze/.cache/openpi")
+# 配置 nativemem_pi05_robomme4task 的 weight_loader 路径默认是原版相对路径，允许用 NM_STAGE1_PARAMS 覆盖成绝对路径；
+# 必须在 import config_nativemem 之前设置（模块导入时读取）。
+os.environ.setdefault("NM_STAGE1_PARAMS", "/scratch/hongze/NativeMEM/checkpoints/mem_tokenizer_pretrain/pretrain/49999/params")
 
 import cv2  # noqa: E402
 import h5py  # noqa: E402
@@ -424,6 +427,28 @@ def test_weights_load():
     print("WEIGHTS_LOAD=PASS loader=NativeMEMWeightLoader src=stage1-49999 random_init=0 unused=encoder")
 
 
+def test_weights_load_via_config_loader():
+    """用配置自身的 weight_loader 加载（N6）：配置路径写错时这里必须失败。"""
+    import flax.nnx as nnx
+    import flax.traverse_util as tu
+    import jax
+
+    from openpi.shared import array_typing as at
+    from openpi.training import config_nativemem as cn
+    from openpi.training import weight_loaders as wl
+
+    cfg = cn.get_config(CONFIG_NAME)
+    loader = cfg.weight_loader
+    assert isinstance(loader, wl.NativeMEMWeightLoader)
+    print(f"[weights-config] params_path={loader.params_path}")
+    assert pathlib.Path(loader.params_path).is_dir(), f"配置里的权重路径不存在：{loader.params_path}"
+    params_shape = jax.eval_shape(lambda r: nnx.state(cfg.model.create(r)), jax.random.key(0)).to_pure_dict()
+    loaded = loader.load(params_shape)
+    at.check_pytree_equality(expected=params_shape, got=loaded, check_shapes=True, check_dtypes=True)
+    flat = tu.flatten_dict(loaded, sep="/")
+    assert not [k for k, v in flat.items() if isinstance(v, jax.ShapeDtypeStruct)]
+
+
 def test_mem_encoder_loads_and_encodes():
     if not pathlib.Path(STAGE1_PARAMS).exists():
         pytest.skip("Stage 1 权重不在本机")
@@ -482,6 +507,12 @@ def test_extract_and_check_memtokens(tmp_path):
     ok, line = cm.check(s["root"], 3, pin, lambda: _fake_encode, write_done=False)
     print(line)
     assert not ok and "zero_rows=0" not in line and "shards=2/3" in line
+    # 编码器输出全零时分片不得写完成标记、不得打印 PASS，以非 0 退出（N2）
+    with pytest.raises(SystemExit) as exc:
+        ext.run_shard(s["root"], 2, lambda frames: np.zeros((len(frames), 1152), np.float32))
+    assert exc.value.code == 1
+    assert not (s["root"] / "shards" / "shard_2.done.json").exists()
+    (s["root"] / "shards" / "shard_2.progress.json").unlink()
     ext.run_shard(s["root"], 2, _fake_encode)
     ok, line = cm.check(s["root"], 3, pin, lambda: _fake_encode)
     print(line)
@@ -523,3 +554,25 @@ def test_mem_data_loader_end_to_end(synth, tmp_path):
     assert obs.images["base_0_rgb"].shape == (4, 224, 224, 3)
     assert obs.tokenized_prompt.shape == (4, cfg.model.max_token_len)
     assert not bool(np.asarray(obs.image_masks["right_wrist_0_rgb"]).any())
+
+
+def test_dataset_smoke_synthetic(synth, tmp_path):
+    """G6b 脚本在合成真库形态上跑通；memmap 缺失时明确 FAIL；篡改 memory 行时 FAIL（N5）。"""
+    import check_dataset_smoke as cds
+
+    ok, line = cds.run_smoke(synth["root"], synth["manifest"], expect_len=synth["exec_total"], per_task=6)
+    print(line)
+    assert ok and line.startswith(f"DATASET_SMOKE=PASS n={synth['exec_total']} samples=")
+    ok, line = cds.run_smoke(synth["root"], synth["manifest"], tmp_path / "missing.bin", expect_len=synth["exec_total"])
+    assert not ok and "reason=no_memmap" in line
+    ok, line = cds.run_smoke(synth["root"], synth["manifest"], expect_len=605611)
+    assert not ok and "reason=len" in line
+    # 行号规则错一位（不是 total_sample_offset + t）时必须 FAIL
+    orig = rds.RoboMMEMemDataset.memory_rows
+    try:
+        rds.RoboMMEMemDataset.memory_rows = lambda self, ep, frames: orig(self, ep, frames) + 1
+        ok, line = cds.run_smoke(synth["root"], synth["manifest"], expect_len=synth["exec_total"], per_task=6)
+    finally:
+        rds.RoboMMEMemDataset.memory_rows = orig
+    print(line)
+    assert not ok and "bad=" in line

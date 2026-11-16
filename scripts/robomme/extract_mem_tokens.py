@@ -11,7 +11,8 @@
 三种模式：
   --init                               建空 memmap（稀疏文件）与 mem_tokens.meta.json（身份与分片计划）
   --num-shards 8 --shard-index i       跑第 i 片（一卡一片，由调用方设 CUDA_VISIBLE_DEVICES）；
-                                       每集写完 flush 后更新进度，可断点续跑；全片完成写 shards/shard_<i>.done.json
+                                       每集写完 flush 后更新进度，可断点续跑；全片完成且 nonfinite=0、zero_rows=0
+                                       才写 shards/shard_<i>.done.json 并打印 MEMTOKENS_SHARD=PASS，否则打印 FAIL 并以 1 退出
   --finalize                           调 check_memtokens.py（G7 全部条件），全过才写 MEMTOKENS_DONE.json
 """
 
@@ -227,6 +228,11 @@ def run_shard(data_root: pathlib.Path, shard_index: int, encode_fn, *, log=print
     region = np.asarray(mm[plan["row_start"] : plan["row_end"]])
     nonfinite = int((~np.isfinite(region)).any(axis=(1, 2)).sum())
     zero_rows = int((np.abs(region).max(axis=2) == 0).any(axis=1).sum())
+    if nonfinite or zero_rows:
+        # 不写完成标记：本片存在非有限值或全零行，交主会话查原因（进度文件保留供定位）。
+        log(f"MEMTOKENS_SHARD=FAIL shard={shard_index} rows={plan['row_end'] - plan['row_start']} "
+            f"nonfinite={nonfinite} zero_rows={zero_rows}")
+        raise SystemExit(1)
     done = {
         **plan,
         "rows": plan["row_end"] - plan["row_start"],
