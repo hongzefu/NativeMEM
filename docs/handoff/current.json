@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "written_at": {
-    "utc": "2026-11-16T22:38:39Z",
-    "america_new_york": "2026-11-16T17:38:39-0500"
+    "utc": "2026-11-16T23:50:54Z",
+    "america_new_york": "2026-11-16T18:50:54-0500"
   },
   "repo": {
     "branch": "robomme-4task",
@@ -19,7 +19,7 @@
       },
       "state": "running",
       "state_changed_at": "2026-11-16T17:38:39-0500",
-      "state_reason": "用户开工令：先做全部非 GPU 工作，GPU 步骤等 V17 训练与评估结束",
+      "state_reason": "CPU 准备全部通过（RUN_TRAIN=PASS mode=check-only、DATA_V2=PASS、NORM_STATS=PASS、CLIENT_WRIST_E2E=PASS），nm-trig 等 V17 评估结束与 8 卡空闲后自动起 nm_pipeline",
       "owner": {
         "session": "https://claude.ai/code/session_019AY9S1ZMimtgVo1pPpasZf",
         "host": "ip-10-242-11-177"
@@ -60,7 +60,18 @@
           "status": "pending"
         }
       ],
-      "running_handles": [],
+      "running_handles": [
+        {
+          "tmux": "nm-trig",
+          "log": "/scratch/hongze/NativeMEM/runs/logs/nm-trigger.log",
+          "done_line": "NM_TRIGGER_CMD_EXIT="
+        },
+        {
+          "tmux": "nm-trig（触发后同会话内运行 nm_pipeline）",
+          "log": "/scratch/hongze/NativeMEM/logs/nm-pipeline.log",
+          "done_line": "NM_PIPELINE=PASS|NM_PIPELINE=FAIL"
+        }
+      ],
       "authorizations": [
         {
           "kind": "go",
@@ -72,16 +83,17 @@
       "pending_decisions": [],
       "next_steps": [
         {
-          "what": "G0 计划一致性审查",
-          "command": "sonnet 审查 24c284d",
-          "verdict_line": "PLAN_CONSISTENCY_REVIEW=PASS"
+          "what": "V17 评估结束后自动：抽 token→冒烟→正式训练→692 局评估",
+          "command": "nm_trigger.sh → bash scripts/robomme/nm_pipeline.sh",
+          "verdict_line": "NM_PIPELINE=PASS"
         },
         {
-          "what": "S0 建库脚本 → 重抽数据",
-          "command": "bash scripts/robomme/run_data_v2.sh",
-          "verdict_line": "DATA_V2=PASS episodes=1600 frames=1192918 views=2 derived=PASS faults=4/4"
+          "what": "失败时从失败步续跑",
+          "command": "NM_PIPELINE_FROM=<步名> bash scripts/robomme/nm_pipeline.sh",
+          "verdict_line": "NM_PIPELINE=PASS"
         }
-      ]
+      ],
+      "freeze_note": "Beta 提交后到 formal 步完成 HEAD 检查前，fork 主检出不得再提交（formal 要求 HEAD 为 Beta 且工作区干净）"
     }
   }
 }
