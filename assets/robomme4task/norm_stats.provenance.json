@@ -1,0 +1,12 @@
+{
+  "norm_stats_sha256": "f4710dff1d4bec66931adce8d74a9f7a581e7376ffc8470af432458d59ef6f6d",
+  "states": 605611,
+  "action_vectors": 30280550,
+  "action_horizon": 50,
+  "delta_mask": "make_bool_mask(7,-1)",
+  "samples": "exec frames only",
+  "data_root": "/scratch/hongze/NativeMEM/data/robomme4task-v2",
+  "manifest": "/scratch/hongze/robomme_policy_learning_MotionJEPA/v1-store/datasets/4task-v2-1600ep-604f16da/meta/episode_manifest.json",
+  "manifest_sha256": "df0ec8edd823b1415fa2bba6a51fa1c911dadc4d10364590d537a97526add482",
+  "created_at_utc": "2026-11-16T23:35:28.248901+00:00"
+}
