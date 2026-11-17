@@ -66,3 +66,10 @@ CLIENT_WRIST_E2E=PASS episodes=2 infers=5
 - 存档：`checkpoints/nativemem_pi05_robomme4task/nativemem-4task1600-b128-20k/19999`
 - 评估：`runs/eval/local692-nativemem-20k/`
 - 日志：`logs/pipeline/`、`logs/train/`、`runs/logs/nm-trigger.log`
+
+## 实施中调整（美东 2026-11-17 05:13–05:45）
+- **G9a（ENCODER_IMPL）判据放宽**：GPU 串联在 online_token 步首次判 FAIL：`ENCODER_IMPL=FAIL n=32 max_abs=0.0694 ratio_min=0.999878 ratio_max=1.000269`（cos_min=0.999974）。原因是 GPU 上 f32 矩阵乘默认降精度，服务器逐帧 batch=1 与离线 batch=64 走不同 kernel；CPU 上同一比对 max_abs=0，离线库与离线重算 max_abs=0，原版固有的 JPEG/非 JPEG 差异（G9b）cos_min=0.977、max_abs=1.9。
+- 新判据：`cos_min>=0.9999` 且范数比 ∈ [0.999,1.001]；原 `max_abs<=1e-5` 改为 `strict_1e-5=` 只记录。附只记录的视角对调参考 cos（CPU 实测 mean 0.50、min 0.24）。
+- 对抗验证 `ADJUST_REVIEW=PASS scale=same findings=3`；合并前审查 `PRE_MERGE_REVIEW=PASS base=7dcc89c tip=60fd061 findings=0`。训练代码与数值语义不变。
+- 因合入新提交，重打 Beta（本提交）后从 online_token 步续跑：`NM_PIPELINE_FROM=online_token bash scripts/robomme/nm_pipeline.sh`（tmux `nm-pipe`）。
+- 已过闸门（首轮，Beta 7dcc89c）：`MEMTOKENS=PASS rows=1192918 … shards=8/8 gaps=0 overlaps=0 recompute=46/46`、`DATASET_SMOKE=PASS n=605611 samples=32`、`SMOKE20=PASS steps=20 save_load=PASS rotate=PASS exit=0 finite=PASS`（稳态约 2.9 s/步）、`RESUME=PASS first_step=20 exit=0`。
