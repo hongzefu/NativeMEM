@@ -73,3 +73,4 @@ CLIENT_WRIST_E2E=PASS episodes=2 infers=5
 - 对抗验证 `ADJUST_REVIEW=PASS scale=same findings=3`；合并前审查 `PRE_MERGE_REVIEW=PASS base=7dcc89c tip=60fd061 findings=0`。训练代码与数值语义不变。
 - 因合入新提交，重打 Beta（本提交）后从 online_token 步续跑：`NM_PIPELINE_FROM=online_token bash scripts/robomme/nm_pipeline.sh`（tmux `nm-pipe`）。
 - 已过闸门（首轮，Beta 7dcc89c）：`MEMTOKENS=PASS rows=1192918 … shards=8/8 gaps=0 overlaps=0 recompute=46/46`、`DATASET_SMOKE=PASS n=605611 samples=32`、`SMOKE20=PASS steps=20 save_load=PASS rotate=PASS exit=0 finite=PASS`（稳态约 2.9 s/步）、`RESUME=PASS first_step=20 exit=0`。
+- **g6b 同卡多片 GPU 归属误判（工程故障，美东 05:28–05:50）**：`EVAL_LOAD_SMOKE=FAIL episodes=1 handshake=PASS share2=FAIL peak_mem_gb=56.7 norm_sha=f4710dff`，g2a 报「计算进程 3687019 不属于已登记分片的进程树」；g1 单份与 g2b 各跑完 1 局。修复：查询后已退出（/proc/<pid> 不存在）的进程跳过，存活陌生进程仍拒绝；`PRE_MERGE_REVIEW=PASS base=c1a33ac tip=b1b8aa1`。失败目录保留为 `runs/eval/nm-g6b.fail1-20261117`。重打 Beta 后从 g6b 步续跑。
