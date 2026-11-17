@@ -27,6 +27,59 @@ OBS_HORIZON=48
 EVAL_TIMEOUT="${EVAL_TIMEOUT:-7200}"
 CHUNK_EPISODES="${CHUNK_EPISODES:-20}"
 DRY="${DRY_RUN:-0}"
+_gpu_owner_ok() {  # $1=GPU 上的 PID，$2=已登记根（空格分隔）；沿 PPid 链能走到某个根即返回 0
+    local q="$1" roots="$2"
+    while [[ -n "$q" && "$q" != 0 && "$q" != 1 && " $roots " != *" $q "* ]]; do
+        q="$(awk '/^PPid:/ {print $2}' "/proc/$q/status" 2>/dev/null || true)"
+    done
+    [[ -n "$q" && " $roots " == *" $q "* ]]
+}
+check_local_gpu() {
+    [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]] || { echo '本机必须显式选择 GPU'; return 2; }
+    local gpu_pids
+    gpu_pids="$("${NVIDIA_SMI:-nvidia-smi}" -i "$CUDA_VISIBLE_DEVICES" --query-compute-apps=pid --format=csv,noheader)" || return 2
+    if [[ "${LOCAL_GPU_SHARE:-1}" == 1 ]]; then
+        if [[ -n "$gpu_pids" ]]; then
+            echo "所选 GPU 已被占用，停止起跑：$gpu_pids"
+            return 2
+        fi
+        echo "LOCAL_GPU_IDLE=PASS device=$CUDA_VISIBLE_DEVICES"
+        return 0
+    fi
+    # LOCAL_GPU_SHARE=N>=2：只认 local_692_pool_nativemem.sh 在 flock 下写的每卡占位文件（逻辑同原脚本）
+    [[ "${LOCAL_GPU_SHARE}" =~ ^[0-9]+$ && "${LOCAL_GPU_SHARE}" -ge 2 ]] || { echo "LOCAL_GPU_SHARE 只能是 1 或 >=2 的整数：$LOCAL_GPU_SHARE"; return 2; }
+    [[ "$CUDA_VISIBLE_DEVICES" =~ ^[0-9]+$ ]] || { echo "LOCAL_GPU_SHARE=$LOCAL_GPU_SHARE 只支持单卡：$CUDA_VISIBLE_DEVICES"; return 2; }
+    local slot_file="${LOCAL_GPU_SLOT_FILE:-}" slots roots p q n_reg own=0 tag pid
+    [[ -n "$slot_file" && -f "$slot_file" ]] || { echo "LOCAL_GPU_SHARE=$LOCAL_GPU_SHARE 需要占位文件 LOCAL_GPU_SLOT_FILE：${slot_file:-unset}"; return 2; }
+    slots="$(flock -s "$slot_file.lock" cat "$slot_file")" || return 2
+    n_reg=0; roots="$$"
+    while read -r tag pid; do
+        [[ -n "$tag" ]] || continue
+        n_reg=$((n_reg + 1))
+        if [[ "$tag" == "$SHARD_TAG" ]]; then own=1; fi
+        if [[ "$pid" =~ ^[0-9]+$ ]]; then roots="$roots $pid"; fi
+    done <<< "$slots"
+    [[ "$own" == 1 ]] || { echo "本片 $SHARD_TAG 未在占位文件登记，停止起跑：$slot_file"; return 2; }
+    (( n_reg <= LOCAL_GPU_SHARE )) || { echo "本卡已登记 $n_reg 片 > $LOCAL_GPU_SHARE，停止起跑：$slot_file"; return 2; }
+    # 沿 PPid 链向上找已登记根。修复（g6b 实测误判）：nvidia-smi 列出的进程可能在查询之后、读 /proc 之前退出
+    # （同卡另一片的 render_probe／客户端、或驱动尚未回收的刚退出进程），原逻辑读到空 PPid 就判「不属于已登记树」。
+    # 现在：未找到根时，若该 PID 已不存在 → 它不再占卡，记录后跳过；仍存活 → 重走一遍（防中途祖先退出的瞬态），
+    # 仍不属于已登记树才拒绝。活着的陌生进程照旧拒绝起跑。
+    for p in $gpu_pids; do
+        [[ "$p" =~ ^[0-9]+$ ]] || { echo "nvidia-smi 返回非数字 PID：$p，停止起跑"; return 2; }
+        _gpu_owner_ok "$p" "$roots" && continue
+        if [[ ! -e "/proc/$p" ]]; then
+            echo "GPU_PROC_EXITED pid=$p（查询后已退出，不计入占用）"
+            continue
+        fi
+        _gpu_owner_ok "$p" "$roots" && continue
+        echo "所选 GPU 上的计算进程 $p 不属于已登记分片的进程树（根=$roots），停止起跑"
+        return 2
+    done
+    echo "LOCAL_GPU_SHARE=PASS device=$CUDA_VISIBLE_DEVICES share=$LOCAL_GPU_SHARE registered=$n_reg gpu_procs=$(wc -w <<< "$gpu_pids")"
+}
+# 单测入口：只跑 GPU 归属检查后退出（NVIDIA_SMI 可替换为打桩命令）
+if [[ "${NM_SHARD_CHECK_GPU_ONLY:-0}" == 1 ]]; then check_local_gpu; exit $?; fi
 # Vulkan 静态 TLS 纵深防御（原脚本同款，只给客户端）
 TLS_TUNABLE="glibc.rtld.optional_static_tls=65536"
 
@@ -73,45 +126,6 @@ fi
 [[ -z "$(git --no-optional-locks -C "$POLICY_SRC" status --porcelain)" ]] || { echo 'policy 仓工作区不干净，停止（只读确认）'; exit 2; }
 [[ -z "$(git -C "$NM_SRC" status --porcelain -- . ':(exclude)runs')" ]] || { echo 'fork 必须从 clean HEAD 启动'; exit 2; }
 command -v uv
-check_local_gpu() {
-    [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]] || { echo '本机必须显式选择 GPU'; return 2; }
-    local gpu_pids
-    gpu_pids="$(nvidia-smi -i "$CUDA_VISIBLE_DEVICES" --query-compute-apps=pid --format=csv,noheader)" || return 2
-    if [[ "${LOCAL_GPU_SHARE:-1}" == 1 ]]; then
-        if [[ -n "$gpu_pids" ]]; then
-            echo "所选 GPU 已被占用，停止起跑：$gpu_pids"
-            return 2
-        fi
-        echo "LOCAL_GPU_IDLE=PASS device=$CUDA_VISIBLE_DEVICES"
-        return 0
-    fi
-    # LOCAL_GPU_SHARE=N>=2：只认 local_692_pool_nativemem.sh 在 flock 下写的每卡占位文件（逻辑同原脚本）
-    [[ "${LOCAL_GPU_SHARE}" =~ ^[0-9]+$ && "${LOCAL_GPU_SHARE}" -ge 2 ]] || { echo "LOCAL_GPU_SHARE 只能是 1 或 >=2 的整数：$LOCAL_GPU_SHARE"; return 2; }
-    [[ "$CUDA_VISIBLE_DEVICES" =~ ^[0-9]+$ ]] || { echo "LOCAL_GPU_SHARE=$LOCAL_GPU_SHARE 只支持单卡：$CUDA_VISIBLE_DEVICES"; return 2; }
-    local slot_file="${LOCAL_GPU_SLOT_FILE:-}" slots roots p q n_reg own=0 tag pid
-    [[ -n "$slot_file" && -f "$slot_file" ]] || { echo "LOCAL_GPU_SHARE=$LOCAL_GPU_SHARE 需要占位文件 LOCAL_GPU_SLOT_FILE：${slot_file:-unset}"; return 2; }
-    slots="$(flock -s "$slot_file.lock" cat "$slot_file")" || return 2
-    n_reg=0; roots="$$"
-    while read -r tag pid; do
-        [[ -n "$tag" ]] || continue
-        n_reg=$((n_reg + 1))
-        if [[ "$tag" == "$SHARD_TAG" ]]; then own=1; fi
-        if [[ "$pid" =~ ^[0-9]+$ ]]; then roots="$roots $pid"; fi
-    done <<< "$slots"
-    [[ "$own" == 1 ]] || { echo "本片 $SHARD_TAG 未在占位文件登记，停止起跑：$slot_file"; return 2; }
-    (( n_reg <= LOCAL_GPU_SHARE )) || { echo "本卡已登记 $n_reg 片 > $LOCAL_GPU_SHARE，停止起跑：$slot_file"; return 2; }
-    for p in $gpu_pids; do
-        q="$p"
-        while [[ -n "$q" && "$q" != 0 && "$q" != 1 && " $roots " != *" $q "* ]]; do
-            q="$(awk '/^PPid:/ {print $2}' "/proc/$q/status" 2>/dev/null || true)"
-        done
-        [[ -n "$q" && " $roots " == *" $q "* ]] || {
-            echo "所选 GPU 上的计算进程 $p 不属于已登记分片的进程树（根=$roots），停止起跑"
-            return 2
-        }
-    done
-    echo "LOCAL_GPU_SHARE=PASS device=$CUDA_VISIBLE_DEVICES share=$LOCAL_GPU_SHARE registered=$n_reg gpu_procs=$(wc -w <<< "$gpu_pids")"
-}
 check_local_gpu
 mkdir -p "$RUN_DIR"
 cd "$RUN_DIR"
