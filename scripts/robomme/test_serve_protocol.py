@@ -333,7 +333,8 @@ def test_check_online_token_pipeline_with_stub_encoder(tmp_path, monkeypatch):
                                  report=str(report))
     assert cot.run(args) == 0
     rep = json.loads(report.read_text(encoding="utf-8"))
-    assert rep["g9a_pass"] and rep["g9a"]["n"] == 64 and rep["g9a"]["max_abs"] <= 1e-5
+    assert rep["g9a_pass"] and rep["strict_pass"] and rep["g9a"]["n"] == 64 and rep["g9a"]["max_abs"] <= 1e-5
+    assert set(rep["view_swap_reference"]) == {"n", "cos_min", "cos_mean"}
     assert set(rep["g9b_strata"]) == {"exec/front", "exec/wrist", "binfill_prefix/front", "binfill_prefix/wrist"}
     assert rep["n_exec_frames"] == 32 and rep["n_prefix_frames"] == 8
     # 反例：尺度差 1%（权重或预处理尺度错误）时 G9a 必须 FAIL；完全相同时 PASS
@@ -547,3 +548,30 @@ def test_nm_pipeline_memtok_failure_kills_own_shards(tmp_path):
     assert {l.split("pid=")[1] for l in kills} <= started_pids    # 只杀自己起的进程
     for pid in started_pids:
         assert not os.path.exists(f"/proc/{pid}") or open(f"/proc/{pid}/stat").read().split()[2] == "Z"
+
+
+def test_g9a_criterion_cos_and_ratio():
+    """实施中调整后的 G9a：cos_min>=0.9999 且范数比∈[0.999,1.001]；max_abs 只记录为 strict_1e-5。"""
+    cot = _load("nm_check_online_token_crit", HERE / "check_online_token.py")
+    rng = np.random.default_rng(0)
+    base = rng.standard_normal((64, TOKEN_DIM)).astype(np.float32)
+    # 噪声级差异（模拟 GPU 降精度 kernel）：cos≈0.99997，max_abs 远超 1e-5 → PASS，strict FAIL
+    noisy = base + rng.standard_normal(base.shape).astype(np.float32) * 0.0077
+    s = cot.pair_stats(base, noisy)
+    assert 0.9999 <= s["cos_min"] < 0.99999 and s["max_abs"] > 1e-5, s
+    assert cot.g9a_verdict(s) and not cot.g9a_strict(s)
+    # 尺度错误 ×100：cos=1 但范数比 0.01 → FAIL
+    s = cot.pair_stats(base, base * 100)
+    assert s["cos_min"] > 0.9999 and not cot.g9a_verdict(s)
+    # 视角对调（用不相关向量模拟）→ FAIL
+    s = cot.pair_stats(base, rng.standard_normal(base.shape).astype(np.float32))
+    assert s["cos_min"] < 0.5 and not cot.g9a_verdict(s)
+    # 视角对调参考值与判定行格式
+    pairs = np.stack([base, rng.standard_normal(base.shape).astype(np.float32)], axis=1)
+    ref = cot.view_swap_reference(pairs)
+    assert set(ref) == {"n", "cos_min", "cos_mean"} and ref["cos_mean"] < 0.5
+    s = cot.pair_stats(base, noisy)
+    line = cot.g9a_line(s, cot.g9a_verdict(s), cot.g9a_strict(s), ref, 32, "gpu")
+    assert line.startswith("ENCODER_IMPL=PASS n=32 cos_min=") and " strict_1e-5=FAIL " in line
+    assert " criterion=cos>=0.9999,ratio∈[0.999,1.001] " in line and " backend=gpu " in line
+    assert "view_swap_ref_cos_min=" in line and "view_swap_ref_cos_mean=" in line

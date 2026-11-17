@@ -6,7 +6,10 @@ G9a ``ENCODER_IMPL``（硬闸门）：同一批 224 像素（每集 H5 的 front
   分别走 ①服务器编码路径（``serve_nativemem.NativeMemServePolicy._encode_one``：``online_frame`` → 逐帧逐路
   batch=1 的 ``encode_frames``）与 ②离线抽取路径（直接调用 S1 ``extract_mem_tokens.encode_episode_chunk``：
   该帧所在的「本集第 64k 帧起 64 帧一批、末批 edge 补齐」，与离线抽取同一条代码路径），要求
-  max_abs <= 1e-5 且逐 token 范数比在 [0.999, 1.001]。排除权重、尺度、视角错位等实现错误。
+  cos_min >= 0.9999 且逐 token 范数比在 [0.999, 1.001]。排除权重、尺度、视角错位等实现错误。
+  实施中调整（ADJUST_REVIEW=PASS scale=same）：原判据 max_abs <= 1e-5 在 GPU 上因 f32 matmul 默认降精度、
+  batch=1 与 batch=64 选不同 kernel 而 FAIL（实测 max_abs=0.0694、cos_min=0.999974），故去掉 max_abs 阈值；
+  判定行仍记录原阈值下的结论 strict_1e-5=PASS|FAIL，并附「离线 front 与离线 wrist 互比」的 cos 作为视角对调参考（只记录）。
   给了 ``--memtokens`` 时另记录离线重算与 memmap 行的差（只记录，完整性由 G7 负责）。
 
 G9b ``ONLINE_TOKEN=RECORDED``（只记录，用户裁决「只记录不拦截」）：同一帧的 raw 在线预处理
@@ -47,7 +50,8 @@ DEFAULT_FRAMES = HERE / "online_token_frames.json"
 VIEWS = ("front", "wrist")
 TASK_OF_H5 = {"record_dataset_BinFill.h5": "BinFill", "record_dataset_RouteStick.h5": "RouteStick",
               "record_dataset_VideoRepick.h5": "VideoRepick", "record_dataset_VideoUnmaskSwap.h5": "VideoUnmaskSwap"}
-G9A_MAX_ABS = 1e-5
+G9A_STRICT_MAX_ABS = 1e-5   # 原判据，只记录（strict_1e-5=PASS|FAIL）
+G9A_COS_MIN = 0.9999
 G9A_RATIO = (0.999, 1.001)
 
 
@@ -131,7 +135,31 @@ def pair_stats(a: np.ndarray, b: np.ndarray) -> dict:
 
 
 def g9a_verdict(stats: dict) -> bool:
-    return stats["max_abs"] <= G9A_MAX_ABS and G9A_RATIO[0] <= stats["ratio_min"] and stats["ratio_max"] <= G9A_RATIO[1]
+    """现行 G9a 判据：cos_min >= 0.9999 且范数比在 [0.999, 1.001]（不设 max_abs 阈值）。"""
+    return (stats["cos_min"] >= G9A_COS_MIN and G9A_RATIO[0] <= stats["ratio_min"]
+            and stats["ratio_max"] <= G9A_RATIO[1])
+
+
+def g9a_strict(stats: dict) -> bool:
+    """原判据（max_abs <= 1e-5 且范数比在 [0.999, 1.001]），只记录。"""
+    return stats["max_abs"] <= G9A_STRICT_MAX_ABS and G9A_RATIO[0] <= stats["ratio_min"] and stats["ratio_max"] <= G9A_RATIO[1]
+
+
+def view_swap_reference(tokens: np.ndarray) -> dict:
+    """视角对调参考（只记录）：同一批帧上离线 front token 与离线 wrist token 逐帧互比的 cos。tokens 形状 [N,2,D]。"""
+    s = pair_stats(tokens[:, 0], tokens[:, 1])
+    a = np.asarray(tokens[:, 0], dtype=np.float64)
+    b = np.asarray(tokens[:, 1], dtype=np.float64)
+    cos = (a * b).sum(-1) / np.maximum(np.linalg.norm(a, axis=-1) * np.linalg.norm(b, axis=-1), 1e-30)
+    return {"n": s["n"], "cos_min": float(cos.min()), "cos_mean": float(cos.mean())}
+
+
+def g9a_line(stats: dict, ok: bool, strict: bool, swap: dict, n_frames: int, backend: str) -> str:
+    return (f"ENCODER_IMPL={'PASS' if ok else 'FAIL'} n={n_frames} cos_min={stats['cos_min']:.6f} "
+            f"ratio_min={stats['ratio_min']:.6f} ratio_max={stats['ratio_max']:.6f} max_abs={stats['max_abs']:.3g} "
+            f"strict_1e-5={'PASS' if strict else 'FAIL'} criterion=cos>={G9A_COS_MIN},ratio∈[{G9A_RATIO[0]},{G9A_RATIO[1]}] "
+            f"tokens={stats['n']} backend={backend} "
+            f"view_swap_ref_cos_min={swap['cos_min']:.6f} view_swap_ref_cos_mean={swap['cos_mean']:.6f}")
 
 
 def server_path_tokens(serve_mod, encode_fn: Callable, online_frame_fn: Callable, pairs: list) -> np.ndarray:
@@ -231,7 +259,11 @@ def run(args) -> int:
     tok_offline = offline_chunk_tokens(xm, encode_fn, pathlib.Path(args.data_root), exec_list)
     g9a = pair_stats(tok_server.reshape(-1, tok_server.shape[-1]), tok_offline.reshape(-1, tok_offline.shape[-1]))
     g9a_ok = g9a_verdict(g9a)
-    report = {"g9a": g9a, "g9a_pass": g9a_ok, "frames": tags, "offline_batch": xm.BATCH_SIZE,
+    g9a_strict_ok = g9a_strict(g9a)
+    swap_ref = view_swap_reference(tok_offline)
+    report = {"g9a": g9a, "g9a_pass": g9a_ok, "strict_pass": g9a_strict_ok,
+              "criterion": {"cos_min": G9A_COS_MIN, "ratio": list(G9A_RATIO), "strict_max_abs": G9A_STRICT_MAX_ABS},
+              "view_swap_reference": swap_ref, "frames": tags, "offline_batch": xm.BATCH_SIZE,
               "offline_path": "extract_mem_tokens.encode_episode_chunk", "jax_backend": __import__("jax").default_backend()}
     if args.memtokens:
         mm = np.memmap(args.memtokens, dtype=np.float32, mode="r").reshape(-1, 2, tok_offline.shape[-1])
@@ -240,13 +272,11 @@ def run(args) -> int:
                                                  tok_offline.reshape(-1, tok_offline.shape[-1]))
         print("MEMMAP_VS_OFFLINE " + json.dumps(report["memmap_vs_offline"]), flush=True)
 
-    g9a_line = (f"ENCODER_IMPL={'PASS' if g9a_ok else 'FAIL'} n={len(exec_off224)} max_abs={g9a['max_abs']:.3g} "
-                f"ratio_min={g9a['ratio_min']:.6f} ratio_max={g9a['ratio_max']:.6f} tokens={g9a['n']} "
-                f"backend={report['jax_backend']}")
+    verdict_line = g9a_line(g9a, g9a_ok, g9a_strict_ok, swap_ref, len(exec_off224), report["jax_backend"])
     report_path.parent.mkdir(parents=True, exist_ok=True)
     if args.g9a_only:
         report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        print(g9a_line, flush=True)
+        print(verdict_line, flush=True)
         return 0 if g9a_ok else 1
 
     # ── G9b：raw 在线 vs JPEG 离线，分层只记录 ──
@@ -265,7 +295,7 @@ def run(args) -> int:
     report.update({"g9b_strata": strata, "g9b_overall": overall,
                    "n_exec_frames": len(exec_raw), "n_prefix_frames": len(prefix_raw)})
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(g9a_line, flush=True)
+    print(verdict_line, flush=True)
     print(f"ONLINE_TOKEN=RECORDED n={len(exec_raw) + len(prefix_raw)} max_abs={overall['max_abs']:.4g} "
           f"cos_min={overall['cos_min']:.6f} report={report_path}", flush=True)
     return 0 if g9a_ok else 1
