@@ -575,3 +575,50 @@ def test_g9a_criterion_cos_and_ratio():
     assert line.startswith("ENCODER_IMPL=PASS n=32 cos_min=") and " strict_1e-5=FAIL " in line
     assert " criterion=cos>=0.9999,ratio∈[0.999,1.001] " in line and " backend=gpu " in line
     assert "view_swap_ref_cos_min=" in line and "view_swap_ref_cos_mean=" in line
+
+
+# ── run_shard_nativemem.sh 同卡多片 GPU 归属检查（g6b 实测误判的修复）──────────────────────────
+
+def test_shard_gpu_owner_check_vanished_and_registered_and_stranger(tmp_path):
+    import os
+    import subprocess
+    import time
+
+    pids_file = tmp_path / "gpu_pids.txt"
+    fsmi = tmp_path / "fsmi"
+    fsmi.write_text(f'#!/usr/bin/env bash\ncat "{pids_file}"\n')
+    fsmi.chmod(0o755)
+    # 已登记的「对方分片」根：bash 下挂一个 sleep（模拟其服务器／渲染子进程）
+    root = subprocess.Popen(["bash", "-c", "sleep 30 & wait"])
+    stranger = subprocess.Popen(["sleep", "30"])
+    try:
+        for _ in range(50):
+            kids = open(f"/proc/{root.pid}/task/{root.pid}/children").read().split()
+            if kids:
+                break
+            time.sleep(0.05)
+        child = kids[0]
+        dead = subprocess.Popen(["true"]); dead.wait()                 # 已退出的 PID（模拟查询后退出的进程）
+        slot = tmp_path / "gpu0"
+        slot.write_text(f"s0 pending\ns1 {root.pid}\n")
+        env = dict(os.environ, NM_SHARD_CHECK_GPU_ONLY="1", LOCAL_GPU_SHARE="2", CUDA_VISIBLE_DEVICES="0",
+                   LOCAL_GPU_SLOT_FILE=str(slot), NVIDIA_SMI=str(fsmi))
+        cmd = ["bash", str(HERE / "run_shard_nativemem.sh"), "nm-test", "/tmp/nm-test/19999", "/tmp/none.json", "7", "s0"]
+
+        def run(pids):
+            pids_file.write_text("".join(f"{p}\n" for p in pids))
+            return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
+
+        r = run([child])                                                # 对方已登记树的后代 → 放行
+        assert r.returncode == 0 and "LOCAL_GPU_SHARE=PASS" in r.stdout, r.stdout + r.stderr
+        r = run([child, dead.pid])                                      # 查询后已退出的进程 → 不计入占用（原逻辑误判点）
+        assert r.returncode == 0 and f"GPU_PROC_EXITED pid={dead.pid}" in r.stdout, r.stdout + r.stderr
+        r = run([child, stranger.pid])                                  # 活着的陌生进程 → 仍拒绝
+        assert r.returncode == 2 and f"计算进程 {stranger.pid} 不属于已登记分片" in r.stdout, r.stdout
+        slot.write_text(f"s1 {root.pid}\n")                             # 本片未登记 → 拒绝
+        r = run([child])
+        assert r.returncode == 2 and "本片 s0 未在占位文件登记" in r.stdout
+    finally:
+        for proc in (root, stranger):
+            proc.kill()
+            proc.wait()
