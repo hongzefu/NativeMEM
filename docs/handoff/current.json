@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "written_at": {
-    "utc": "2026-11-16T23:50:54Z",
-    "america_new_york": "2026-11-16T18:50:54-0500"
+    "utc": "2026-11-18T04:40:00Z",
+    "america_new_york": "2026-11-17T23:40:00-0500"
   },
   "repo": {
     "branch": "robomme-4task",
-    "base_head": "24c284d9b8f08cf38f40614e96dfd7320bbbb988"
+    "base_head": "a841a63"
   },
   "freeze": {
     "active": false
@@ -17,9 +17,9 @@
         "file": "1116-nativemem-4task-stage2-plan.html",
         "sha": "24c284d"
       },
-      "state": "running",
-      "state_changed_at": "2026-11-16T17:38:39-0500",
-      "state_reason": "CPU 准备全部通过（RUN_TRAIN=PASS mode=check-only、DATA_V2=PASS、NORM_STATS=PASS、CLIENT_WRIST_E2E=PASS），nm-trig 等 V17 评估结束与 8 卡空闲后自动起 nm_pipeline",
+      "state": "closed",
+      "state_changed_at": "2026-11-17T23:40:00-0500",
+      "state_reason": "正式训练、HF 上传读回、692 局评估全部 PASS，结果档案 a841a63 已推送；长尾上传已完成",
       "owner": {
         "session": "https://claude.ai/code/session_019AY9S1ZMimtgVo1pPpasZf",
         "host": "ip-10-242-11-177"
@@ -34,44 +34,33 @@
       "pre_handoff": [
         {
           "what": "正式训练完成",
-          "evidence": "TRAIN_FINAL=PASS step=19999 ckpts=1 finite=PASS",
-          "where": "/scratch/hongze/NativeMEM/logs/nm-train.log",
-          "status": "pending"
+          "evidence": "TRAIN_FINAL=PASS step=19999 ckpts=1 finite=PASS exit=0",
+          "where": "/scratch/hongze/NativeMEM/logs/nm-pipe2.log",
+          "status": "pass"
         },
         {
           "what": "692 局评估完成",
-          "evidence": "EVAL692=PASS episodes=692",
-          "where": "/scratch/hongze/NativeMEM/runs/eval/local692-nativemem-20k",
-          "status": "pending"
+          "evidence": "EVAL692=PASS episodes=692 success=290 rate=0.4191 preseeded_errors=9 new_errors=0 retried=0",
+          "where": "/scratch/hongze/NativeMEM/runs/eval/local692-nativemem-20k/EVAL692.txt",
+          "status": "pass"
         },
         {
           "what": "结果档案提交",
-          "evidence": "commit sha",
-          "where": "docs/training-doc/",
-          "status": "pending"
+          "evidence": "a841a63",
+          "where": "docs/training-doc/nativemem-4task1600-b128-20k/result.md",
+          "status": "pass"
         }
       ],
       "long_tail": [
         {
-          "what": "19999 整目录上传 HF 公开 bucket 并读回",
+          "what": "19999 整目录上传 HF 公开 bucket HongzeFu/robomme-vla-4task-nativemem-20k-v1 并读回",
           "tmux": "nm-ckptup",
           "log": "/scratch/hongze/NativeMEM/logs/nm-ckptup.log",
-          "done_line": "HF_VERIFY=PASS ckpts=1",
-          "status": "pending"
+          "done_line": "HF_VERIFY=PASS ckpts=1 files=78 bytes=42486972074",
+          "status": "pass"
         }
       ],
-      "running_handles": [
-        {
-          "tmux": "nm-trig",
-          "log": "/scratch/hongze/NativeMEM/runs/logs/nm-trigger.log",
-          "done_line": "NM_TRIGGER_CMD_EXIT="
-        },
-        {
-          "tmux": "nm-trig（触发后同会话内运行 nm_pipeline）",
-          "log": "/scratch/hongze/NativeMEM/logs/nm-pipeline.log",
-          "done_line": "NM_PIPELINE=PASS|NM_PIPELINE=FAIL"
-        }
-      ],
+      "running_handles": [],
       "authorizations": [
         {
           "kind": "go",
@@ -80,20 +69,10 @@
           "scope": "1116 计划 24c284d 全部步骤；GPU 步骤以 J#22 四条件为触发"
         }
       ],
-      "pending_decisions": [],
-      "next_steps": [
-        {
-          "what": "V17 评估结束后自动：抽 token→冒烟→正式训练→692 局评估",
-          "command": "nm_trigger.sh → bash scripts/robomme/nm_pipeline.sh",
-          "verdict_line": "NM_PIPELINE=PASS"
-        },
-        {
-          "what": "失败时从失败步续跑",
-          "command": "NM_PIPELINE_FROM=<步名> bash scripts/robomme/nm_pipeline.sh",
-          "verdict_line": "NM_PIPELINE=PASS"
-        }
+      "pending_decisions": [
+        "可选：同一 19999 存档按 16 步执行另做 692 局对照（执行步数 48 vs V17 16 步不同条件，计划 X11），未授权"
       ],
-      "freeze_note": "Beta 提交后到 formal 步完成 HEAD 检查前，fork 主检出不得再提交（formal 要求 HEAD 为 Beta 且工作区干净）"
+      "next_steps": []
     }
   }
 }
